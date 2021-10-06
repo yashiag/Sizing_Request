@@ -1,0 +1,893 @@
+/**
+*  @Name:          SBQuoteService
+*  @Description:   Class used to handle Quote services, its a extension to MktpQuoteService.
+*  @Author:        Mahesh Devarasetti
+*  @Date:          Apr-30-2020
+*
+*  Change Log
+*  -----------------------------------------------------------
+*  Developer           Modification Date           Comments
+*  -----------------------------------------------------------
+*  Mahesh Devarasetti   Apr/30/2020               Initial Version.
+*  Mahesh Devarasetti   Aug/12/2020               NOVACPQ-1135 / NOVACPQ-1088.
+*  Andre Huang          4/26/2021                 Added additional condition to Partner Level set on Quote
+*
+**/
+public without sharing class SBQuoteService {
+    public static final Set<String>INSIDE_SALES_N_OPS = new Set<String>{'sales ops','sales desk','order desk','inside sales ops'};
+        public static final String MIDTERM_QUOTE_BILLTO_CHANGED_ERROR_MSG = 'Sold To must be the same as the original purchase';
+    public static final String MODULE_NAME = 'SBQuoteService';
+    public static final String QUOTE_AFTER_UPDATE_USE_PLATFORM_EVENT = 'QuoteAfterUpdate Use Platform Event';
+    public static final String RETAIN_PRIMARY_QUOTE_USE_PLATFORM_EVENT = 'RetainPrimaryQuote Use Platform Event';
+    public static final String AMEND_QUOTE_NO_CHANGE_ERROR_MSG = 'Quote cannot be sent for approval since no changes were made to the existing subscriptions on the contract';
+    public static final String THEATRE_NAM = 'NAM';
+    public static final String THEATRE_EMEA = 'EMEA';
+    public static final String THEATRE_APAC = 'APAC';
+    public static final String THEATRE_JP = 'JP';
+    public static final String THEATRE_INTL = 'INTL';
+    public static final String THEATRE_DISTI_WITHOUT_THEATRE = 'DistiWithoutTheatre';
+    public static final String THEATRE_RESELLER_WITHOUT_THEATRE = 'ResellerWithoutTheatre';
+    public static final String PARTNER_LEVEL_MSSP = 'MSSP';
+    public static final String PARTNER_LEVEL_MSSP_INNOVATOR = 'MSSP Innovator';
+    public static final String PARTNER_LEVEL_MSSP_NO_DISCOUNTS = 'MSSP without discounts';
+    public static final String TYPE_MAINTENANCE_RENEWAL = 'Maintenance Renewal';
+    public static Boolean customNotificatinSent = false;
+    public static final List<String> ASC_VALUES = new List<String>{'Yes', 'Pending', 'Probation', 'Conditional'};
+        public static Boolean sentEmail = false;    
+    
+    /**
+* NOVACPQ-814 to improve renewal quote performance, this boolean detects if we are executing in a new Renewal Quote flow
+*/
+    public static boolean isNewRenewalQuoteFlow = false;
+    public static Id renewalQuoteId = null;
+    
+    /**
+*  @description To populate Opportunity Fields.
+*  @param      opp             Opportunity object.
+*  @param      qt              Quote object.
+*
+*  @return     SBQQ__Quote__c  Returns Quote object.
+**/
+    public static SBQQ__Quote__c populateOpportunityFields(Opportunity opp, SBQQ__Quote__c qt) {
+        qt.SBQQ__Distributor__c = opp.Distributor__r.Account_Id__c;
+        qt.Disti__c = opp.Distributor__r.Account_Id__c;
+        qt.Disti__r = opp.Distributor__r.Account_Id__r;
+        qt.SBQQ__Partner__c = opp.Second_Tier_Reseller__c;
+        // BEGIN NOVACPQ-2180
+        User thisUser = SBQueryHelper.getLoggedInUserInfo();
+        qt.NextWave_Reseller_Id__c = opp.Second_Tier_Reseller__c;
+        qt.NextWave_Reseller_Name__c = opp.Second_Tier_Reseller__r.Name;
+        // For Distributor user creating NetNew or Amend Quote, defer populating Reseller__c until later to avoid Acceess issue in QLE by Distributor Profile user
+        if (thisUser.Profile.Name != PartnerConstants.DISTRIBUTOR_Profile && !SBQuoteAmendContractRestService.isRestServiceFlow) {
+            qt.Reseller__c = opp.Second_Tier_Reseller__c;
+            qt.Reseller__r = opp.Second_Tier_Reseller__r;
+            qt.Is_Portal_Quote__c = false;
+        } else {
+            qt.Is_Portal_Quote__c = true;
+        }
+        // END NOVACPQ-2180
+        qt.Panw_Distributor__c = opp.Distributor__c;
+        qt.Customer_Admin_Account__c = opp.AccountId;
+        qt.Is_EDI_Quote__c = opp.Distributor__r.Account_Id__r.isEDICustomer__c;
+        if(opp.Distributor__c != null) {
+            qt = populateBillingAddress(opp.Distributor__r.Account_Id__r, qt);
+        } else if(opp.Second_Tier_Reseller__c != null) {
+            qt = populateBillingAddress(opp.Second_Tier_Reseller__r, qt);
+        } else if(opp.Account != null) {
+            qt = populateBillingAddress(opp.Account, qt);
+        }
+        // CT-113 added logic
+        qt.Deal_Type__c = opp.Deal_Type__c;
+        if ((opp.Second_Tier_Reseller__c != null && ASC_VALUES.contains(opp.Second_Tier_Reseller__r.ASC__c))
+            || (opp.Distributor__c != null && ASC_VALUES.contains(opp.Distributor__r.ASC__c))) {
+                qt.ASC_value_reseller_disti__c = 'Yes';
+            } else {
+                qt.ASC_value_reseller_disti__c = 'No';
+            }
+        qt.Partner_DealReg__c = opp.Portal_DealReg__c;
+        qt.Is_New_Customer__c = opp.Is_New_Customer__c;
+        qt.Country_Set__c = opp.Second_Tier_Reseller__r.Country_Set__c;
+        qt.Partner_Specialization__c = '';
+
+        // ----NOVA2740/CORTEX-3304 - Set Fields on Quote from Opty 
+        qt.Managed_Service_Type__c 		= opp.SP_SI_MSSP_Partner_Type_Selection__c;
+        qt.Specialization_Sub_Type__c 	= opp.Sub_Specialization__c;         
+        qt.MSSP_MDR_Specialization__c = (opp.SP_SI_MSSP__c != null && opp.SP_SI_MSSP__r.Partner_Specialization__c != null && opp.SP_SI_MSSP__r.Partner_Specialization__c.contains('MDR')) ? 'MDR' : '';
+        qt.Deal_Submission_Type__c = opp.Deal_Registration__r.RecordType.Name;
+
+        
+        if (opp.Second_Tier_Reseller__r.Partner_Specialization__c != null)
+            qt.Partner_Specialization__c = opp.Second_Tier_Reseller__r.Partner_Specialization__c.replaceAll(';', '');
+        if (opp.Distributor__r.Account_Id__c != null) {
+            if (opp.Distributor__r.Account_Id__r.Theatre__c == THEATRE_NAM)
+                qt.NextWave_Theatre__c = THEATRE_NAM;
+            else if (opp.Distributor__r.Account_Id__r.Theatre__c == THEATRE_EMEA || opp.Distributor__r.Account_Id__r.Theatre__c == THEATRE_APAC || opp.Distributor__r.Account_Id__r.Theatre__c == THEATRE_JP)
+                qt.NextWave_Theatre__c = THEATRE_INTL;
+            else
+                qt.NextWave_Theatre__c = THEATRE_DISTI_WITHOUT_THEATRE;
+        } else if (opp.Second_Tier_Reseller__c != null) {
+            if (opp.Second_Tier_Reseller__r.Theatre__c == THEATRE_NAM)
+                qt.NextWave_Theatre__c = THEATRE_NAM;
+            else if (opp.Second_Tier_Reseller__r.Theatre__c == THEATRE_EMEA || opp.Second_Tier_Reseller__r.Theatre__c == THEATRE_APAC || opp.Second_Tier_Reseller__r.Theatre__c == THEATRE_JP)
+                qt.NextWave_Theatre__c = THEATRE_INTL;
+            else
+                qt.NextWave_Theatre__c = THEATRE_RESELLER_WITHOUT_THEATRE;
+        } else if (opp.AccountId != null) {
+            if (opp.Account.Theatre__c == THEATRE_NAM)
+                qt.NextWave_Theatre__c = THEATRE_NAM;
+            else if (opp.Account.Theatre__c == THEATRE_EMEA || opp.Account.Theatre__c == THEATRE_APAC)
+                qt.NextWave_Theatre__c = THEATRE_INTL;
+            else if (opp.Account.Theatre__c == THEATRE_JP)
+                qt.NextWave_Theatre__c = THEATRE_JP;
+            else
+                qt.NextWave_Theatre__c = THEATRE_INTL;
+        }
+        qt.NextWave_Partner_Level__c = '';
+
+        if ((opp.SP_SI_MSSP_Partner_Type_Selection__c == PARTNER_LEVEL_MSSP && opp.Type == TYPE_MAINTENANCE_RENEWAL) || 
+            (opp.SP_SI_MSSP_Partner_Type_Selection__c == PARTNER_LEVEL_MSSP && opp.Portal_DealReg__c == true)) {
+
+            qt.NextWave_Partner_Level__c = PARTNER_LEVEL_MSSP_INNOVATOR;
+        } else if (opp.SP_SI_MSSP_Partner_Type_Selection__c == PARTNER_LEVEL_MSSP && opp.Portal_DealReg__c == false) {
+
+            qt.NextWave_Partner_Level__c = PARTNER_LEVEL_MSSP_NO_DISCOUNTS;
+        } else {
+
+            if (opp.Second_Tier_Reseller__r.Partner_Level__c != null) {
+
+                qt.NextWave_Partner_Level__c = opp.Second_Tier_Reseller__r.Partner_Level__c;
+            }
+        }
+        return qt;
+    }
+    
+    /**
+*  @description To populate Billing Address with the given input.
+*  @param      acc             Account object record.
+*  @param      qt              Quote object record.
+*
+*  @return     SBQQ__Quote__c  Returns Quote object.
+**/
+    @TestVisible
+    private static SBQQ__Quote__c populateBillingAddress(Account acc, SBQQ__Quote__c qt) {
+        qt.Bill_To_Account_Street__c = acc.Billing_Street__c;
+        qt.Bill_To_Account_City__c = acc.Billing_City__c;
+        qt.Bill_To_Account_State__c = acc.Billing_State__c;
+        qt.Bill_To_Account_Postal_Code__c = acc.Billing_Zip__c;
+        qt.Bill_To_Account_Country__c = acc.Billing_Country__c;
+        qt.Bill_To_Account_VAT_Number__c = acc.VAT_Number__c;
+        return qt;
+    }
+    
+    /**
+*  @description To validate if amend quote has valid quotelines.
+*  @param      quote lines lst             Quote Line.
+*
+*  @return     Boolean  Returns True False.
+**/
+    public static Boolean validateEffectiveQuantityForAmendment(List<SBQQ__QuoteLine__c> quoteLnItmLst) {
+        Boolean isEffectiveQuantityValid = False;
+        for(SBQQ__QuoteLine__c ql : quoteLnItmLst) {
+            if(ql.SBQQ__EffectiveQuantity__c != 0) {
+                isEffectiveQuantityValid = True;
+                break;
+            }
+        }
+        return isEffectiveQuantityValid;
+    }
+    
+    public static Boolean  validateBillToForUpgrades(List<SBQQ__QuoteLine__c> quoteLnItmLst) {
+        Boolean isbillToChanged = false;
+        If(quoteLnItmLst.size() > 0){
+            SBQQ__QuoteLine__c quoteLine = quoteLnItmLst[0];
+            if(quoteLine.SBQQ__Quote__r.Quote_Type__c != null && quoteLine.SBQQ__Quote__r.Quote_Type__c.equalsIgnoreCase('Upgrade') &&
+               !(INSIDE_SALES_N_OPS.contains(quoteLine.SBQQ__Quote__r.Current_User_Sales_Level__c.toLowerCase())) &&
+               quoteLine.SBQQ__Quote__r.Original_Contract__r.Billing_Account_Name__c != quoteLine.SBQQ__Quote__r.Billing_Account_Name__c){
+                   isbillToChanged = true;
+               }
+        }
+        return isbillToChanged;
+    }
+    
+    /**
+* BEGIN NOVACPQ-816 Following moved here from MktpQuoteDispatcherCtrl.cls
+*/
+    public static final string moduleName = 'MKTP_QuoteService';
+    public static final String sbtPrisma = 'MQDC_SBT_Prisma';
+    public static final String sbtCortex = 'MQDC_SBT_Cortex';
+    
+    public static Map<String, String> constantMap {
+        get {
+            if (constantMap == null) {
+                constantMap = MktpSettingsHelper.fetchMktpConstant(moduleName);
+            }
+            return constantMap;
+        }
+        set;
+    }
+    
+    /**
+* NOVACPQ-816 Set Opp fields when creating first quote.  Invoked as part of Quote afterInsert trigger in
+* MktpQuoteService.opportunityQuoteTypeUpdatesMap and opportunityPSBTUpdatesMap
+* NOVACPQ-814: added for Renewal also
+* This is called in @future mode
+*/
+    public static void setOpportunityFieldsForFirstQuote(Integer numQuotes, Opportunity oppUpdate, SBQQ__Quote__c quote){
+        System.debug('NOVACPQ-816 numQuotes ' + numQuotes + ' Is_MarketPlace_Quote__c ' + quote.Is_MarketPlace_Quote__c);
+        if (numQuotes == 1 && !quote.Is_MarketPlace_Quote__c) {
+            oppUpdate.Pricebook2Id = quote.SBQQ__PricebookId__c;
+            oppUpdate.Recalculate_Partner_Sharing__c = true;    // NOVACPQ-2180 trigger sharing update for distis
+            if (quote.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_NEW)) {
+                oppUpdate.Transaction_Type__c = MktpQuoteConstants.TRANSACTION_NEW;
+            } else if (quote.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_RENEW)) {
+                oppUpdate.Transaction_Type__c = MktpQuoteConstants.TRANSACTION_RENEW;
+                oppUpdate.Quote_Type__c = 'Steelbrick Renewals';
+                oppUpdate.SBQQ__Renewal__c = true;
+                oppUpdate.Type = 'Maintenance Renewal';
+                oppUpdate.RecordTypeId = Schema.SObjectType.Opportunity.getRecordTypeInfosByDeveloperName().get('SAP_Renewal').getRecordTypeId();
+            }
+            oppUpdate.Is_Marketplace_Deal__c = quote.Is_MarketPlace_Quote__c;
+        }
+    }
+    
+    /**
+     * NOVACPQ-816 The following utility methods moved from MktpQuoteDispatcherCtrl
+     */
+    public static SBQQ__Quote__c setQuoteValues(SBQQ__Quote__c quote, Opportunity opp, PriceBook2 pBook, Integer quoteCount, String theatre, String priceListType) {
+        Id recordTypeIdEDI = Schema.SObjectType.SBQQ__Quote__c.getRecordTypeInfosByDeveloperName().get('Quote_Pending_EDI').getRecordTypeId();
+        Id recordTypeIdNonEDI = Schema.SObjectType.SBQQ__Quote__c.getRecordTypeInfosByDeveloperName().get('Quote_Pending_Non_EDI').getRecordTypeId();
+        quote.SBQQ__Opportunity2__c = opp.Id;
+        quote.SBQQ__Status__c = 'Pending';
+        quote.Quote_Theater__c = theatre;
+        quote.Price_List_Type__c = priceListType;
+        quote.SBQQ__Primary__c = false; // NOVACPQ-816
+        quote.SBQQ__PriceBook__c = pBook.Id;
+        quote.SBQQ__PricebookId__c = pBook.Id;
+        quote.RecordTypeId = opp.isEDIOpportunity__c ? recordTypeIdEDI: recordTypeIdNonEDI;//based on relevant opp types
+        
+        return quote;
+    }
+    
+    /**
+* NOVACPQ-816 The following utility methods moved from MktpQuoteDispatcherCtrl
+*/
+    /*public static SBQQ__Quote__c setQuoteValues(SBQQ__Quote__c quote,Opportunity opp,PriceBook2 pBook,Integer quoteCount,String theatre) {
+        Id recordTypeIdEDI = Schema.SObjectType.SBQQ__Quote__c.getRecordTypeInfosByDeveloperName().get('Quote_Pending_EDI').getRecordTypeId();
+        Id recordTypeIdNonEDI = Schema.SObjectType.SBQQ__Quote__c.getRecordTypeInfosByDeveloperName().get('Quote_Pending_Non_EDI').getRecordTypeId();
+        quote.SBQQ__Opportunity2__c = opp.Id;
+        quote.SBQQ__Status__c = 'Pending';
+        quote.Quote_Theater__c = theatre;
+        quote.SBQQ__Primary__c = false; // NOVACPQ-816
+        quote.SBQQ__PriceBook__c = pBook.Id;
+        quote.SBQQ__PricebookId__c = pBook.Id;
+        quote.RecordTypeId = opp.isEDIOpportunity__c ? recordTypeIdEDI: recordTypeIdNonEDI;//based on relevant opp types
+        
+        return quote;
+    }
+    */
+    public static SBQQ__Quote__c setQuoteBillingAddress(SBQQ__Quote__c quote,Opportunity opp) {
+        quote.SBQQ__BillingName__c = opp.Account.Name ;
+        quote.SBQQ__BillingStreet__c = opp.Account.Billing_Street__c ;
+        quote.SBQQ__BillingCity__c = opp.Account.Billing_City__c ;
+        quote.SBQQ__BillingState__c = opp.Account.Billing_State__c ;
+        quote.SBQQ__BillingCountry__c = opp.Account.Billing_Country__c ;
+        quote.SBQQ__BillingPostalCode__c = opp.Account.Billing_Zip__c ;
+        return quote;
+    }
+    
+    public static SBQQ__Quote__c setQuoteShippingAddress(SBQQ__Quote__c quote,Opportunity opp){
+        quote.SBQQ__ShippingName__c = opp.Account.Name ;
+        quote.SBQQ__ShippingStreet__c = opp.Account.Billing_Street__c ;
+        quote.SBQQ__ShippingCity__c = opp.Account.Billing_City__c ;
+        quote.SBQQ__ShippingState__c = opp.Account.Billing_State__c ;
+        quote.SBQQ__ShippingCountry__c = opp.Account.Billing_Country__c ;
+        quote.SBQQ__ShippingPostalCode__c = opp.Account.Billing_Zip__c ;
+        return quote;
+    }
+    
+    public static SBQQ__Quote__c getQuoteRep(SBQQ__Quote__c quote, Opportunity opp){
+        System.debug('MktpQuoteDispatcherCtrl : getQuoteRep : Main_Speedboat_Type__c' + opp.Main_Speedboat_Type__c);
+        System.debug('MktpQuoteDispatcherCtrl : getQuoteRep : sbtPrisma' +constantMap.get(sbtPrisma));
+        System.debug('MktpQuoteDispatcherCtrl : getQuoteRep : sbtCortex' +constantMap.get(sbtCortex));
+        
+        if(opp.Main_Speedboat_Type__c != null && opp.Main_Speedboat_Type__c.equals(constantMap.get(sbtPrisma))){
+            quote.Public_Cloud_Rep__c = opp.Public_Cloud_Reps__c;
+            quote.Public_Cloud_Rep_Manager__c = opp.Public_Cloud_Reps__r.ManagerId;
+        }else if(opp.Main_Speedboat_Type__c != null && opp.Main_Speedboat_Type__c.equals(constantMap.get(sbtCortex))){
+            quote.Public_Cloud_Rep__c = opp.Cortex_Rep__c;
+            quote.Public_Cloud_Rep_Manager__c = opp.Cortex_Rep__r.ManagerId;
+        }
+        return quote;
+    }
+    
+    /**
+* New For NOVACPQ-816, set the CloubSub_Discount_Percent__C as part of the Quote insert.  Previously this was done in Quote beforeUpdate
+* but the update has been removed with performance optimization before redirecting to /apex/sb
+*/
+    public static void setCloudSubDiscount(SBQQ__Quote__c quote, Opportunity opp) {
+        List<DefaultDiscount__c> discounts = MktpQuoteService.getDefaultDiscountInfo();
+        String theatre = (quote.Quote_Theater__c == 'North America') ? quote.Quote_Theater__c : 'International';
+        String portalDealReg = opp.Portal_DealReg__c ? 'With DealReg' : 'Without DealReg';
+        String isDistiOrReseller = opp.Distributor__c != null ? 'isDistiQuote' : ( opp.Second_Tier_Reseller__c != null ? 'isResellerQuote' : 'directQuote');
+            System.debug('NOVACPQ-816 theatre ' + theatre + ' portalDealReg ' + portalDealReg + ' isDistiOrReseller ' + isDistiOrReseller);
+        for(DefaultDiscount__c dd: discounts) {
+            System.debug('NOVACPQ-816 dd.Theatre__c ' + dd.Theatre__c + ' dd.Opportunity_Feature__c ' + dd.Opportunity_Feature__c + ' dd.isdisti_or_reseller_default_discounts__c ' + dd.isdisti_or_reseller_default_discounts__c);
+            if (dd.Theatre__c == theatre && dd.Opportunity_Feature__c == portalDealReg && dd.isdisti_or_reseller_default_discounts__c == isDistiOrReseller) {
+                quote.CloudSub_Discount_Percent__c = dd.Discount__c;
+                break;
+            }
+        }
+    }
+    
+    /**
+     * NOVACPQ-816 Invoked from MktpQuoteTriggerHandler afterUpdate
+     * @param newQuoteMap
+     */
+    public static void fireQuoteAfterUpdateEvent(Map<Id,SBQQ__Quote__c> newQuoteMap, List<SBQQ__Quote__c> newQuoteList, Map<Id,SBQQ__Quote__c> oldQuoteMap) {
+        System.debug('NOVACPQ-816 afterUpdate SBQuoteService.fireQuoteAfterUpdateEvent');
+        map<Id,SBQQ__Quote__c> mapOldTriggerValuesToPass = new map<Id,SBQQ__Quote__c>();
+        // Only fire event if any quote is <= approved or primary
+        boolean toFire = false;
+        for (SBQQ__Quote__c quote : newQuoteList) {
+            if (quote.SBQQ__Status__c == SBConstants.QUOTE_STATUS_PENDING || quote.SBQQ__Primary__c ||
+                    ((quote.SBQQ__Status__c  != oldQuoteMap.get(quote.Id).SBQQ__Status__c) && // Adding the condition to send custom notification
+                        SBConstants.STATUSES_TO_SEND_CUSTOM_NOTIFICATION.contains(quote.SBQQ__Status__c) && !customNotificatinSent)) {
+                toFire = true;
+                // Add only those fields from trigger.oldMap that we need in Platform event and hence, to reduce the JSON size that we pass.
+                mapOldTriggerValuesToPass.put(quote.Id, new SBQQ__Quote__c(Id= quote.Id, 
+                                                                    SBQQ__Status__c = oldQuoteMap.get(quote.Id).SBQQ__Status__c));
+                customNotificatinSent = true;
+                break;
+            }
+        }
+        if (toFire) {
+            //SBQuoteAfterUpdateEvent__e event = new SBQuoteAfterUpdateEvent__e(Event_Data__c = Json.serialize(newQuoteMap.keyset()));
+            SBQuoteAfterUpdateEvent__e event = new SBQuoteAfterUpdateEvent__e(Event_Data__c = Json.serialize(mapOldTriggerValuesToPass));
+            // Check system config to use Platform Event asynchronously or invoke directly
+            String constantValue = MktpSettingsHelper.fetchMktpConstantValue(MODULE_NAME, QUOTE_AFTER_UPDATE_USE_PLATFORM_EVENT);
+            if (constantValue != null && !constantValue.equalsIgnoreCase('true')) {
+                SBQuoteAfterUpdateEventTriggerHandler handler = new SBQuoteAfterUpdateEventTriggerHandler();
+                handler.processPlatformEvent(event);
+            } else {
+                List<SBQuoteAfterUpdateEvent__e> eventList = new List<SBQuoteAfterUpdateEvent__e>();
+                eventList.add(event);
+                List<Database.SaveResult> results = EventBus.publish(eventList);
+                for (Database.SaveResult sr : results) {
+                    if (sr.isSuccess()) {
+                        System.debug('NOVACPQ-816 Successfully published event.');
+                    } else {
+                        throw new MktpException('System is not able to create or update Quote at this time.');
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+* NOVACPQ-816 setting first quote as primary if there isn't one.
+* @param newQuoteMap
+*/
+    public static boolean setFirstQuoteAsPrimary(List<SBQQ__Quote__c> newQuoteList) {
+        system.debug('NOVACPQ-816 SBQuoteService.setFirstQuoteAsPrimary');
+        
+        boolean updated = false;
+        List<SBQQ__Quote__c> lsUpdates = new List<SBQQ__Quote__c>();
+        
+        Set<Id> setOppId = new Set<Id>();
+        for (SBQQ__Quote__c quote : newQuoteList) {
+            setOppId.add(quote.SBQQ__Opportunity2__c);
+        }
+        Map<Id, Opportunity> mapOpps = MktpQuoteService.getOpportunityInfoBeforeTransaction(setOppId);
+        for (SBQQ__Quote__c quote : newQuoteList) {
+            Opportunity opp = mapOpps.get(quote.SBQQ__Opportunity2__c);
+            System.debug('NOVACPQ-816 opp.Number_of_SB_Quotes__c ' + opp.Number_of_SB_Quotes__c + ' opp.SBQQ__PrimaryQuote__c ' + opp.SBQQ__PrimaryQuote__c + ' quote.SBQQ__Primary__c ' + quote.SBQQ__Primary__c);
+            if (opp.Number_of_SB_Quotes__c <= 1 && quote.SBQQ__Primary__c == false && quote.To_Set_Primary_Status__c == SBConstants.QUOTE_TO_SET_PRIMARY_STATUS_PRIMARY &&
+                (opp.SBQQ__PrimaryQuote__c == null || opp.SBQQ__PrimaryQuote__c == quote.Id))
+            {
+                quote.SBQQ__Primary__c = true;
+                quote.To_Set_Primary_Status__c = null;   // clear flag now that primary is set
+                lsUpdates.add(quote);
+                opp.SBQQ__PrimaryQuote__c = quote.Id;    // Just as a flag, not updating opp
+            }
+            // NOVACPQ-814 piggyback Unprimary Renewal logic here.  When saving and primary is already false, need to clear To_Set_Primary flag
+            if (quote.SBQQ__Primary__c == false && quote.To_Set_Primary_Status__c == SBConstants.QUOTE_TO_SET_PRIMARY_STATUS_UNPRIMARY) {
+                quote.To_Set_Primary_Status__c = null;
+                lsUpdates.add(quote);
+            }
+        }
+        if (lsUpdates.size() > 0) {
+            update lsUpdates;
+            updated = true;
+        }
+        system.debug('NOVACPQ-816 SBQuoteService.setFirstQuoteAsPrimary END ');
+        return updated;
+    }
+    
+    /**
+* NOVACPQ-814 -
+* Scenario 1 - Only one quote being updated at a time in this flow
+* This method detects if we are in a New Renewal Quote flow.  If so, the requirement is to retain the old primary quote as primary
+* to override Steelbrick behavior of making the new quote primary.
+* When we are executing Quote updates as part of the managed steelbrick queueable task, Steelbrick seems to perform these tasks
+* in this order in the same transaction while running in the queueable task.
+* 1.  Update new Renewal Quote with renewal information
+* 2.  Set old primary quote as non-primary
+* This method will be executed twice, once for the new quote, next for the old quote.  If this is the flow, we will fire off
+* platform event to make the old quote primary again.
+*/
+    public static void retainPrimaryQuote(Map<Id,SBQQ__Quote__c> newQuoteMap,Map<Id,SBQQ__Quote__c> oldQuoteMap, List<SBQQ__Quote__c> newQuoteList) {
+        // Scenario 1
+        if (System.isQueueable() || Test.isRunningTest()) {
+            if (!isNewRenewalQuoteFlow) {
+                // Not yet determined if we are in the new Renew Quote Flow.  Look for this first condition
+                for (Id oldId : oldQuoteMap.keySet()) {
+                    SBQQ__Quote__c oldQuote = oldQuoteMap.get(oldId);
+                    SBQQ__Quote__c newQuote = newQuoteMap.get(oldId);
+                    
+                    // if this is new quote update, the unprimary flag is set
+                    if (oldQuote.SBQQ__Type__c != null && oldQuote.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_RENEW) && oldQuote.To_Set_Primary_Status__c == SBConstants.QUOTE_TO_SET_PRIMARY_STATUS_UNPRIMARY &&
+                        oldQuote.SBQQ__Primary__c == true) {
+                            System.debug('NOVACPQ-814 SBQuoteService retainPrimaryQuote found new quote id ' + oldQuote.Id);
+                            isNewRenewalQuoteFlow = true;     // Remember this state in a flag.  Only one quote being updated in this flow
+                            renewalQuoteId = oldQuote.Id;
+                            return;
+                        }
+                }
+            } else {
+                // Knowing we are already in new Renewal Quote flow, now look for 2nd condition
+                for (Id oldId : oldQuoteMap.keySet()) {
+                    SBQQ__Quote__c oldQuote = oldQuoteMap.get(oldId);
+                    SBQQ__Quote__c newQuote = newQuoteMap.get(oldId);
+                    
+                    // Coming here the second time, if this is old quote update, the primary flag is changed from true to false
+                    if (oldQuote.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_RENEW) && oldQuote.Id != renewalQuoteId &&
+                        oldQuote.SBQQ__Primary__c == true && newQuote.SBQQ__Primary__c == false) {
+                            System.debug('NOVACPQ-814 SBQuoteService retainPrimaryQuote found old primary quote id ' + oldQuote.Id);
+                            // this old quote is the quote to retain primary.  Only one quote being updated in this flow
+                            // fire platform event to make old quote primary again
+                            Set<Id> ids = new Set<Id>{oldQuote.Id};
+                                SBQuoteMakePrimaryEvent__e event = new SBQuoteMakePrimaryEvent__e(Event_Data__c = Json.serialize(ids));
+                            // Check system config to use Platform Event asynchronously or invoke directly
+                            String constantValue = MktpSettingsHelper.fetchMktpConstantValue(MODULE_NAME, RETAIN_PRIMARY_QUOTE_USE_PLATFORM_EVENT);
+                            if (constantValue != null && !constantValue.equalsIgnoreCase('true')) {
+                                SBQuoteMakePrimaryEventTriggerHandler handler = new SBQuoteMakePrimaryEventTriggerHandler();
+                                handler.processPlatformEvent(event);
+                            } else {
+                                List<SBQuoteMakePrimaryEvent__e> eventList = new List<SBQuoteMakePrimaryEvent__e>();
+                                eventList.add(event);
+                                List<Database.SaveResult> results = EventBus.publish(eventList);
+                                for (Database.SaveResult sr : results) {
+                                    if (sr.isSuccess()) {
+                                        System.debug('NOVACPQ-814 Successfully published SBQuoteMakePrimaryEvent__e event.');
+                                        return;
+                                    } else {
+                                        throw new MktpException('System is not able to create or update Quote at this time.');
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+            
+        }
+    }
+    
+    /**
+* @description      Static method to retrieve the Billing Address from SAP.
+* @param quoteIdSet Set of Quote Ids.
+* @returns          None.
+**/
+    @future(callout=true)
+    public static void getBillingAddressFromSAP(Set<Id> quoteIdSet) {
+        System.debug('SBQuoteService:: getBillingAddressFromSAP: quoteIdSet: ' + quoteIdSet);
+        
+        Map<Id, SBQQ__Quote__c> qtMap = getQuotesForSAP(quoteIdSet);
+        
+        if(qtMap != null && !qtMap.isEmpty()) {
+            Map<Id, Map<String, Object>> quoteIdResponseMap = new Map<Id, Map<String, Object>>();
+            //send the calls to sap in individual quote level calls
+            for (SBQQ__Quote__c qt : qtMap.values()) {
+                System.debug('SBQuoteService:: getBillingAddressFromSAP: qt: ' + qt);
+                Map<String, Object> quoteResponseMap = SBBillingAddressPayloadHelper.getBillingAddressFromSAP(qt);
+                System.debug('SBQuoteService:: getBillingAddressFromSAP: quoteResponseMap: ' + quoteResponseMap);
+                quoteIdResponseMap.put(qt.Id, quoteResponseMap);
+            }
+            
+            List<SBQQ__Quote__c> quoteToUpdateList = new List<SBQQ__Quote__c>();
+            
+            for(SBQQ__Quote__c qt : qtMap.values()) {
+                Map<String, Object> quoteResponseMap = quoteIdResponseMap.get(qt.Id);
+                if(quoteResponseMap != null && !quoteResponseMap.isEmpty()) {
+                    if(quoteResponseMap.get(SBConstants.RESPONSE_REMARKS) != null) {
+                        System.debug('SBQuoteService:: getBillingAddressFromSAP: quoteResponseMap: ' + quoteResponseMap);
+                    } else {
+                        SBQQ__Quote__c qtUpdate = new SBQQ__Quote__c(Id = qt.Id);
+                        qtUpdate.Is_SAP_Billing_Address__c = true;
+                        qtUpdate.Bill_To_Account_Street__c = (String)quoteResponseMap.get(SBConstants.BILLING_ADDRESS_STREET);
+                        qtUpdate.Bill_To_Account_City__c = (String)quoteResponseMap.get(SBConstants.BILLING_ADDRESS_CITY);
+                        qtUpdate.Bill_To_Account_State__c = String.valueOf(quoteResponseMap.get(SBConstants.BILLING_ADDRESS_STATE));
+                        qtUpdate.Bill_To_Account_Postal_Code__c = String.valueOf(quoteResponseMap.get(SBConstants.BILLING_ADDRESS_POST_CODE));
+                        String countryStr = String.valueOf(quoteResponseMap.get(SBConstants.BILLING_ADDRESS_COUNTRY));
+                        // Mismatch between SAP and SFDC, hence changing the country here for United States.
+                        if(countryStr.equalsIgnoreCase(CountryUtils.UNITED_STATES_OF_AMERICA)) {
+                            countryStr = CountryUtils.UNITED_STATES;
+                        }
+                        
+                        qtUpdate.Bill_To_Account_Country__c = countryStr;
+                        qtUpdate.Bill_To_Account_VAT_Number__c = String.valueOf(quoteResponseMap.get(SBConstants.BILLING_ADDRESS_VAT_NUM));
+                        quoteToUpdateList.add(qtUpdate);
+                    }
+                }
+            }
+            
+            System.debug('SBQuoteService:: getBillingAddressFromSAP: quoteToUpdateList: ' + quoteToUpdateList);
+            
+            if(!quoteToUpdateList.isEmpty()) {
+                update quoteToUpdateList;
+            }
+        }
+    }
+    
+    /**
+* @description      Static method query Quote details.
+* @param quoteIdSet Set of Quote Ids.
+* @returns          Map contains Id and Quote information.
+**/
+    @TestVisible
+    private static Map<Id, SBQQ__Quote__c> getQuotesForSAP(Set<Id> quoteIdSet){
+        return new Map<Id, SBQQ__Quote__c>([SELECT Id, Billing_Account_Name__c, SBQQ__Opportunity2__c, SBQQ__Opportunity2__r.Account_Theatre__c
+                                            FROM SBQQ__Quote__c WHERE Id IN :quoteIdSet]);
+    }
+    
+    /**
+* @description      Method to mark the Quote as Primary.
+* @param quoteId    Quote Id.
+* @returns          Map contains Id and Quote information.
+**/
+    public static Boolean makePrimary(Id quoteId) {
+        Boolean isSuccess = false;
+        List<SBQQ__Quote__c> oppQuotes = new List<SBQQ__Quote__c>();
+        List<SBQQ__Quote__c> quotesToUpdate = new List<SBQQ__Quote__c>();
+        Id recordTypeRenewalId = Schema.SObjectType.Opportunity.getRecordTypeInfosByDeveloperName().get('SAP_Renewal').getRecordTypeId();
+        Id recordTypeInternalId = Schema.SObjectType.Opportunity.getRecordTypeInfosByDeveloperName().get('Internal_Opptys').getRecordTypeId();
+        
+        System.debug('SBQuoteService: makePrimary: quoteId ' + quoteId);
+        SBQQ__Quote__c qt = SBQueryHelper.queryQuotePrimaryInfo(quoteId);
+        
+        Opportunity opp =  SBQueryHelper.queryOpptyPBInfo(qt.SBQQ__Opportunity2__c);
+        
+        System.debug('SBQuoteService: makePrimary: quote type ' + qt.SBQQ__Type__c);
+        System.debug('SBQuoteService: makePrimary: quote original contract ' + qt.Original_Contract__c);
+        
+        if(opp != null) {
+            Boolean isUpdateNeeded = false;
+            Boolean isOLIDeleteNeeded = false;
+            String transactionType = '';
+            String quoteType = '';
+            String recordTypeId = recordTypeInternalId;
+            String oppType = '';
+            if((qt.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_NEW)) && (String.isBlank(qt.Original_Contract__c))) {
+                transactionType = MktpQuoteConstants.TRANSACTION_NEW;
+                quoteType = MktpQuoteConstants.OPP_QUOTE_TYPE_STEELBRICK_QUOTE;
+                oppType = MktpQuoteConstants.OPP_TYPE_INITIAL_BUSINESS;
+            } else if((qt.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_NEW)) && (!String.isBlank(qt.Original_Contract__c))) {
+                transactionType = MktpQuoteConstants.TRANSACTION_EXPAND;
+                quoteType = MktpQuoteConstants.OPP_QUOTE_TYPE_STEELBRICK_AMEND;
+                oppType = MktpQuoteConstants.OPP_TYPE_EXPAND_BUSINESS;
+            } else if(qt.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_AMEND)) {
+                transactionType = MktpQuoteConstants.TRANSACTION_EXPAND;
+                quoteType = MktpQuoteConstants.OPP_QUOTE_TYPE_STEELBRICK_AMEND;
+                oppType = MktpQuoteConstants.OPP_TYPE_EXPAND_BUSINESS;
+            } else if (qt.SBQQ__Type__c.equalsIgnoreCase(MktpQuoteConstants.QUOTE_RENEW)) {
+                transactionType = MktpQuoteConstants.TRANSACTION_RENEW;
+                quoteType = MktpQuoteConstants.OPP_QUOTE_TYPE_STEELBRICK_RENEWALS;
+                recordTypeId = recordTypeRenewalId;
+                oppType = MktpQuoteConstants.OPP_TYPE_MAINTENANCE_RENEWAL;
+            }
+            
+            System.debug('SBQuoteService: makePrimary: transactionType : ' + transactionType);
+            System.debug('SBQuoteService: makePrimary: opp : ' + opp);
+            
+            //Set Transaction type for opportunity
+            // NOVACPQ-2465 to handle Partner Distributor user, the ASC id is stored in Portal_ASC__c
+            Id effectiveASC = qt.ASC__c;
+            if (effectiveASC == null) {
+                effectiveASC = qt.Portal_ASC__c;      // NOVACPQ-2465 Need to check both ASC__c and Portal_ASC__c
+            }
+            if(opp.Transaction_Type__c != transactionType || opp.Quote_Type__c != quoteType || 
+                opp.Type != oppType || opp.RecordTypeId != recordTypeId || opp.ASC__c != effectiveASC) {
+                   isUpdateNeeded = true;
+                   opp.Transaction_Type__c = transactionType;
+                   opp.Quote_Type__c = quoteType;
+                   opp.Type = oppType;
+                   opp.RecordTypeId = recordTypeId;
+                opp.ASC__c = effectiveASC;
+               }
+            // END NOVACPQ-2465
+            // NOVACPQ-2180 to handle Partner Distributor user, the reseller id is stored in NextWave_Reseller_id__c
+            Id effectiveResellerId = null;
+            if (qt.Reseller__c != null) {
+                effectiveResellerId = qt.Reseller__c;
+            } else if (!String.isBlank(qt.NextWave_Reseller_Id__c)) {
+                effectiveResellerId = qt.NextWave_Reseller_Id__c;
+            }
+            if(opp.Distributor__r.Account_Id__c != qt.Disti__c || opp.Second_Tier_Reseller__c != effectiveResellerId) {
+                isUpdateNeeded = true;
+                opp.Second_Tier_Reseller__c = effectiveResellerId;
+                opp.Distributor__c = qt.Panw_Distributor__c;
+            }
+            // END NOVACPQ-2180
+
+            if(opp.Pricebook2Id != qt.SBQQ__PriceBook__c) {
+                isUpdateNeeded = true;
+                isOLIDeleteNeeded = true;
+                opp.Pricebook2Id = qt.SBQQ__PriceBook__c;
+            }
+            
+            if(isUpdateNeeded) {
+                if(isOLIDeleteNeeded) {
+                    delete opp.OpportunityLineItems;
+                }
+                update opp;
+            }
+        }
+        
+        if (qt.Id != null) {
+            //Interceptor Adding Make Callidus quote Non primary
+            //CPQSteelbrickInterceptor interceptor = new CPQSteelbrickInterceptor();
+            //interceptor.flipPrimaryQuote(qt);
+            //End Intrerceptor
+            oppQuotes = MktpQuoteHelperAE.getNonPrimaryQuotes(qt);
+        }
+        
+        System.debug('SBQuoteService: makePrimary: oppQuotes ' + oppQuotes);
+        
+        if (oppQuotes.size() > 0) {
+            for (SBQQ__Quote__c quote : oppQuotes) {
+                System.debug('SBQuoteService:makePrimary:quote'+quote);
+                if (quote.Id == quoteId && !quote.SBQQ__Primary__c) {
+                    System.debug('SBQuoteService:makePrimary:quote.SBQQ__Primary__c in not condition'+quote.SBQQ__Primary__c);
+                    quotesToUpdate = MktpQuoteHelperAE.setQuoteToUpdate(quoteId, true, quotesToUpdate);
+                } else if (quote.Id != quoteId && quote.SBQQ__Primary__c) {
+                    System.debug('SBQuoteService:makePrimary:quote.SBQQ__Primary__c in primary condition'+quote.SBQQ__Primary__c);
+                    quotesToUpdate =  MktpQuoteHelperAE.setQuoteToUpdate(quote.Id, false, quotesToUpdate);
+                }
+            }
+            System.debug('SBQuoteService:makePrimary:quotesToUpdate'+quotesToUpdate);
+            System.debug('SBQuoteService:makePrimary:quotesToUpdate Size'+quotesToUpdate.size());
+            if (quotesToUpdate.size() > 0) {
+                System.debug('SBQuoteService: makePrimary: updating quotes ' + quotesToUpdate);
+                MktpQuoteHelperAE.updateQuotes(quotesToUpdate);
+                isSuccess = true;
+            }
+        }
+        
+        return isSuccess;
+    }
+    
+    
+    /**
+* NOVACPQ-2038 Opportunity owner to be notified when Quote is approved with PS SKUs.
+*/
+    public static void sendEmailToOpptyOwner(Map<Id,SBQQ__Quote__c> newQuoteMap,Map<Id,SBQQ__Quote__c> oldQuoteMap) {
+        
+        Set<Id> quoteIds = new Set<Id>();
+        for (Id quoteId : newQuoteMap.keySet()) {
+            SBQQ__Quote__c oldQuote = oldQuoteMap.get(quoteId);
+            SBQQ__Quote__c newQuote = newQuoteMap.get(quoteId);
+            if(newQuote.SBQQ__Status__c == 'Approved' && newQuote.SBQQ__Status__c != oldQuote.SBQQ__Status__c){
+                quoteIds.add(quoteId);
+            }
+        }
+        if(!quoteIds.isEmpty() && !sentEmail){
+            sendEmailToOpptyOwnerforPS(quoteIds);
+            sentEmail = true;
+        }
+    }
+    
+    
+    @future
+    public static void sendEmailToOpptyOwnerforPS(Set<Id> quoteIds) {
+        
+        Map<Id, Id> quoteIdToOwnerIdMap = new Map<Id, Id>(); 
+        list<MKTP_PS_SKU__mdt> productMdt = [SELECT Value__c,DeveloperName FROM MKTP_PS_SKU__mdt];
+        set<string> productSet = new set<string>();
+        for (MKTP_PS_SKU__mdt productCode : productMdt){
+            
+            productSet.add(productCode.Value__c);
+        }
+        
+        for(SBQQ__QuoteLine__c qLRec : [select id, Name, SBQQ__Quote__r.SBQQ__Status__c, SBQQ__Quote__c,
+                                        SBQQ__Quote__r.SBQQ__Opportunity2__r.OwnerId, SBQQ__Product__r.ProductCode 
+                                        from SBQQ__QuoteLine__c 
+                                        where SBQQ__Quote__c in: quoteIds]){
+                                            if(productSet.contains(qLRec.SBQQ__Product__r.ProductCode)){
+                                                
+                                                quoteIdToOwnerIdMap.put(qLRec.SBQQ__Quote__c, qLRec.SBQQ__Quote__r.SBQQ__Opportunity2__r.OwnerId);    
+                                                
+                                            }
+                                        }
+        if(quoteIdToOwnerIdMap.size() > 0){
+            EmailTemplate emailTemplate = [Select Id,Subject,Description,HtmlValue,DeveloperName,Body from EmailTemplate where name = 'SB PS Sku Alert' limit 1];
+            Messaging.Email[] messages = new Messaging.Email[0];
+            
+            for(Id quoteId : quoteIdToOwnerIdMap.keySet()){
+                Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+                mail.setTargetObjectId(quoteIdToOwnerIdMap.get(quoteId));
+                mail.setTemplateId(emailTemplate.Id);
+                mail.setWhatId(quoteId);
+                mail.setSaveAsActivity(false);
+                messages.add(mail);
+            }
+            Messaging.SendEmailResult[] results = Messaging.sendEmail(messages);
+            
+            if (results[0].success) 
+            {
+                System.debug('The email was sent successfully.'+results[0].success);
+            } else {
+                System.debug('The email failed to send: ' +  results[0].errors[0].message);
+                
+            }
+        }
+        
+    }
+    
+    /**
+    * @description To populate Quote Fields while updation happens.
+    * @param newQuoteList New List of quotes
+    * @param oldQuoteMap old Map of Quotes
+    * @returns  None
+    **/
+    public static void populateQuoteFieldsOnUpdate(List<SBQQ__Quote__c> newQuoteList, Map<Id, SBQQ__Quote__c> oldQuoteMap) {
+        for(SBQQ__Quote__c qt: newQuoteList) {
+            qt.Is_Trial_Converted__c = String.isNotBlank(qt.Trials_Converted__c) ? true : false;
+        }
+    }
+    
+	/**
+    * @description to update expanse tier if the acc has a valid request
+    * @param newQuoteList New List of quotes
+    * @param Contract con
+    * @returns  none
+    **/
+    public static void setExpanseProductTier(List<SBQQ__Quote__c> quotes, Contract con) {
+        Set<String> accIds = new Set<String>();
+        for (SBQQ__Quote__c quote : quotes) {
+            //if (null != oldQuote && null != oldQuote.SBQQ__Opportunity2__c && null != quote.SBQQ__Opportunity2__c && oldQuote.SBQQ__Opportunity2__c != quote.SBQQ__Opportunity2__c) {
+                accIds.add(quote.SBQQ__Account__c);
+            //}
+        }
+        String originalAccId;
+        if (null != con) {
+            String expTierSku;
+            for (SBQQ__Subscription__c sub : con.SBQQ__Subscriptions__r) {
+                if (String.isNotBlank(sub.Product_Code__c) && sub.Product_Code__c.containsIgnoreCase('PAN-EXP-EXPNDR-DLF')) {
+                    expTierSku = sub.Product_Code__c;
+                    break;
+                }
+            }
+            if (String.isNotBlank(expTierSku)) {
+                for (SBQQ__Quote__c quote : quotes) {
+                    quote.Expanse_Platform_Tier__c = expTierSku;
+                }
+            }
+            
+            originalAccId = con.AccountId;
+            if (String.isNotBlank(originalAccId)) {
+                accIds.add(originalAccId);
+            } 
+        }
+        if (!accIds.isEmpty()) {
+            System.debug('SBQuoteService.setExpanseProductTier accIds ' + accIds);
+            List<SizingRequest__c> sizingRequests = [SELECT Id,Account__c, AUM__c FROM SizingRequest__c WHERE Account__c =: accIds AND isPrimary__c = true AND Status__c='Completed' ];
+            System.debug('SBQuoteService.setExpanseProductTier sizingRequests ' + sizingRequests);
+            if (null != sizingRequests && !sizingRequests.isEmpty()) {
+                Map<Id, Decimal> accIdToAUM = new Map<Id, Decimal>();
+                for (SizingRequest__c sReq : sizingRequests) {
+                    accIdToAUM.put(sReq.Account__c, sReq.AUM__c);
+                }
+                System.debug('SBQuoteService.setExpanseProductTier accIdToAUM ' + accIdToAUM);
+                List<SB_Sizing_Tier__mdt> expanseTiers = MktpSettingsHelper.getExpanseTiers();
+                Map<Id, String> accToProductMap = SBSizingRequestTriggerHandler.getAccToProductMap(accIdToAUM, expanseTiers);
+                System.debug('SBQuoteService.setExpanseProductTier accToProductMap ' + accToProductMap);
+                if (!accToProductMap.isEmpty()) {
+                    for (SBQQ__Quote__c quote : quotes) {
+                        String tier = accToProductMap.get(quote.SBQQ__Account__c);
+                        if(accIdToAUM.containsKey(originalAccId) && 
+                           (!accIdToAUM.containsKey(quote.SBQQ__Account__c) || 
+                            accIdToAUM.get(originalAccId) > accIdToAUM.get(quote.SBQQ__Account__c)) ) {
+                            tier = accToProductMap.get(originalAccId);
+                        }
+                        System.debug('SBQuoteService.setExpanseProductTier tier ' + tier);
+                        if(null == quote.Expanse_Platform_Tier__c || quote.Expanse_Platform_Tier__c != tier) {
+                            quote.Expanse_Platform_Tier__c = tier;
+                        }
+                        System.debug('SBQuoteService.setExpanseProductTier Expanse_Platform_Tier__c ' + quote.Expanse_Platform_Tier__c);
+                    }
+                    //update quotes;
+                }
+            }
+        }
+    }
+    /**
+    * @description to update Opportunity to stage 10
+    * @param lstOpptyId List of oppties to update
+    * @returns  none
+    **/
+    public static void updateOpptyStage(List<Id> lstOpptyId){
+        List<Opportunity> lstOpportunity = new List<Opportunity>();
+        for(Id opptyId: lstOpptyId){
+            Opportunity oppToUpdate = new Opportunity(Id = opptyId);
+            oppToUpdate.StageName = OpportunityConstants.STAGE_NAME_CLOSEDSTAGE;
+            lstOpportunity.add(oppToUpdate);
+        }
+        if(!lstOpportunity.isEmpty()){
+            update lstOpportunity;
+        }
+    }
+
+    /*
+    *    NOVACPQ-2475 - Vignesh Nayak S
+    *    Moving the Process Builder Functionality to trigger.
+    *    PB Name - Trigger Custom notification
+    */
+    public static void triggerCustomNotification(List<SBQQ__Quote__c> lstQuote, map<Id, SBQQ__Quote__c> mapOldQuote){
+        String notificaitonBody, notificaitonTitle;
+
+        for(SBQQ__Quote__c sQuote :lstQuote){
+            if(sQuote.CreatedBy.isActive && mapOldQuote.get(sQuote.Id).SBQQ__Status__c != sQuote.SBQQ__Status__c){
+                Set<String> setRecipents= new Set<String>{sQuote.CreatedById};
+                notificaitonBody = sQuote.SBQQ__Opportunity2__r.Name + '\n' + sQuote.Name + '\n $' + sQuote.SBQQ__NetAmount__c + '\n';
+                notificaitonTitle = '';
+                if(sQuote.SBQQ__Status__c == SBConstants.QUOTE_STATUS_APPROVED_SENT_TO_DISTI &&
+                        mapOldQuote.get(sQuote.Id).SBQQ__Status__c == SBConstants.QUOTE_STATUS_APPROVED){
+                    notificaitonTitle = constantMap.get('Notification_Title_Quote_Approved_EDISen');
+                    if(String.isNotBlank(sQuote.SAP_PO_Number__c)){ // to avoid "null" showing up in custom notification boby
+                        notificaitonBody += sQuote.SAP_PO_Number__c;                    
+                    }
+                }else if(sQuote.SBQQ__Status__c == SBConstants.QUOTE_STATUS_REJECTED){
+                    notificaitonTitle = constantMap.get('Notification_Title_Quote_Reject');
+                }else if(sQuote.SBQQ__Status__c == SBConstants.QUOTE_STATUS_EXPIRED){
+                    notificaitonTitle = constantMap.get('Notification_Title_Quote_Expired');
+                }
+                system.debug('Entered the triggerCustomNotification and trying to publish'+notificaitonTitle);
+                if(String.isNotBlank(notificaitonTitle)){
+                    SBUtil.notifyUsers(constantMap.get('Notify_Seller_Mobile_InApp_and_Push_Id'), // Notification Id
+                                    notificaitonBody, notificaitonTitle,setRecipents,sQuote.Id);//Body,Title,recipents,Targer object Id
+                }
+            }
+        }
+    }
+    
+    // Method to return the productGroup using QuoteLine
+    public static Map<Id,Set<String>> populateQuoteProductGroupMap(List<SBQQ__QuoteLine__c> queriedQuoteLines){
+         Map<Id,Set<String>> quoteProductGroupMap = new Map<Id,Set<String>>();
+        for(SBQQ__QuoteLine__c line : queriedQuoteLines){
+            if(!quoteProductGroupMap.containsKey(line.SBQQ__Quote__c) && String.isNotBlank(line.Product_Group__c)){
+                quoteProductGroupMap.put(line.SBQQ__Quote__c, new Set<String>{line.Product_Group__c});
+            }else if (quoteProductGroupMap.containsKey(line.SBQQ__Quote__c) && String.isNotBlank(line.Product_Group__c)){
+                quoteProductGroupMap.get(line.SBQQ__Quote__c).add(line.Product_Group__c);
+            }
+        }
+       return  quoteProductGroupMap;
+    }
+
+    /**
+     * NOVACPQ-2692 When placing Amendment Quote that is MDQ but the contract is not, the Contract need to be converted into MDQ first
+     */
+    public static void convertMDQ(Set<SBQQ__Quote__c> setQuote) {
+        Id contractId = null;
+        Id quoteId = null;
+        for (SBQQ__Quote__c quote : setQuote) {
+            if (quote.MDQScore__c > 0 && quote.SBQQ__Type__c == SBConstants.QUOTE_TYPE_AMENDMENT) {
+                contractId = quote.Original_Contract__c;
+                quoteId = quote.Id;
+                break;
+            }
+        }
+        if (contractId != null) {
+            MktpContractService.convertContractToMDQ(quoteId, contractId);
+        }
+    }
+
+}
