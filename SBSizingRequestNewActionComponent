@@ -1,0 +1,82 @@
+<aura:component  controller="SBSizingRequestNewActionController" implements="force:appHostable,flexipage:availableForAllPageTypes,flexipage:availableForRecordHome,forceCommunity:availableForAllPageTypes,force:lightningQuickAction,lightning:actionOverride" access="global">
+	
+     <lightning:workspaceAPI aura:id="workspace"/>
+    <aura:attribute name="sizingRequest" type="SizingRequest__c" default="{ 'sobjectType': 'SizingRequest__c' }"/>
+    <!--<aura:attribute name="IsTemplateLoaded" type="Boolean" default="true"/>-->
+    <aura:attribute name="modalContext" type="String" default="New" />
+    
+    <aura:attribute name="SizingRequestMap" type="Map"  default="{}"/>
+    
+    <aura:attribute name="IsSpinner" type="Boolean"/>
+    <aura:attribute name="showDialog" type="String"/>
+    <!--<aura:attribute name="IsEditLoad" type="Boolean" default="false"/>-->
+    <aura:attribute name="message" type="String"/>
+    <aura:attribute name="messageType" type="String"/>
+    
+    
+      <aura:handler event="aura:waiting" action="{!c.showSpinner}"/>
+    <aura:handler event="aura:doneWaiting" action="{!c.hideSpinner}"/>
+    <aura:attribute name="shouldHideSpinner" type="Boolean"/>
+    <aura:handler name="init" value="{!this}" action="{!c.doInit}"/>
+    
+    <aura:handler name="change" value="{!v.showDialog}" action="{!c.toggleDialog}" />       
+    
+    <!--<lightning:overlayLibrary aura:id="overlayLib"/>
+    
+    <aura:handler name="change" value="{!v.savedIndex}" action="{!c.updateAddress}" />-->
+    
+    <div aura:id="editDialog" role="dialog" tabindex="-1" aria-labelledby="header43" class="slds-modal slds-modal">
+        <div class="slds-modal__container">
+            <div class="slds-modal__header">
+                <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close this window">
+                    <lightning:buttonIcon iconName="utility:close" variant="bare-inverse" size="large" onclick="{!c.cancelDialog}" alternativeText="Close window." />
+                </button>
+                <h2 class="slds-text-heading--medium">{!v.modalContext} Sizing Request:PAN</h2>
+                <aura:if isTrue="{!!empty(v.message)}">
+                    <c:LightningMessage message="{!v.message}" type="{!v.messageType}"/>
+                </aura:if>
+            </div>
+            
+            <div class="modal-body slds-scrollable slds-modal__content slds-p-around--medium slds-is-relative">
+                <!-- *** Information Section - BEGIN **** -->
+                <div class="slds-section slds-is-open">
+                    <h3 class="slds-section__title slds-theme_shade primaryPaletteBorder"><span class="slds-p-horizontal--small slds-truncate">Information</span></h3>
+                    <lightning:recordEditForm objectApiName="SizingRequest__c" class="recordEditForm" aura:id="sizingReqForm" recordId="{!v.recordId}">
+                        <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
+                            <lightning:inputField aura:id="accountIdString" fieldName="Account__c" readonly="true" />
+                        </div>
+                        <!--   <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
+                            <lightning:inputField aura:id="opptyId" fieldName="Opportunity__c" readonly="true" />
+                        </div>
+                      
+                        <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
+                            <lightning:inputField aura:id="reqType" fieldName="Request_Type__c" />
+                        </div> --> 
+                        <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
+                            <lightning:inputField aura:id="companyDomain" fieldName="Company_Domains__c" />
+                        </div>
+                        <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px"> 
+                            <lightning:inputField aura:id="companySubsidiaries" fieldName="Company_Subsidiaries__c"/>   
+                        </div>
+                        <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
+                            <lightning:inputField aura:id="additionalInfo" fieldName="AdditionalInfo__c" />
+                        </div>                      
+                    </lightning:recordEditForm>
+                </div>
+                <!-- *** Information Section - END **** -->                
+                
+                <aura:if isTrue="{!v.IsSpinner}">
+                    <lightning:spinner variant="brand" aura:id="sldsspinner" />
+                </aura:if>
+            </div>
+            
+            <div class="slds-modal__footer slds-is-relative">
+                <lightning:button type="Cancel" name="Cancel" label="Cancel" onclick="{!c.cancelDialog}" class="slds-m-top_medium"/>
+                <!--<lightning:button type="Success" name="Save" variant="brand" label="Save" onclick="{!c.saveRecord}" class="slds-m-top_medium"/>-->
+                <lightning:button type="submit" name="Save" variant="brand" label="Save" onclick="{!c.handleOnSubmit}" class="slds-m-top_medium"/>
+            </div>
+        </div>
+    </div>
+    <div aura:id="overlay" class="slds-backdrop"></div>
+    
+</aura:component>
