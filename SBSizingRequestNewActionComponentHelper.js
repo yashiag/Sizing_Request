@@ -21,12 +21,25 @@
                     $A.get('e.force:refreshView').fire();*/
                     window.setTimeout(
                         $A.getCallback(function() {
-                            var navEvt = $A.get("e.force:navigateToSObject");
+                             var navEvt = $A.get("e.force:navigateToSObject");
+                            var showToast=$A.get("e.force:showToast");
                             navEvt.setParams({
                                 "isredirect": true,
                                 "recordId": recId
                             });
+                            showToast.setParams({
+                                
+           						 "message": 'Sizing Request '+recId+' is Successfully Created',
+            					 "duration":' 4000',
+            					  "key": 'info_alt',
+            					  "type": 'success',
+           						  "mode": 'pester',
+                               	  "recordId": recId
+
+                            })
+                            showToast.fire();
                             navEvt.fire();
+                            
                             $A.get('e.force:refreshView').fire();
                         }), 2000
                     );
