@@ -19,7 +19,7 @@ public class SBSizingRequestNewActionController {
             newSizingReq.Account__c = sizingRequestMap.get('AccountId');
             System.debug('SBSizingRequestController.saveSizingRequest ---- ');
             if(sizingRequestMap.get('RecordId') == null || sizingRequestMap.get('RecordId') ==''){
-              newSizingReq.Opportunity__c = sizingRequestMap.get('OpportunityId');
+              //newSizingReq.Opportunity__c = sizingRequestMap.get('OpportunityId');
                 newSizingReq.Status__c = 'In-progress';
             }
             //newSizingReq.Request_Type__c = sizingRequestMap.get('RequestType');
