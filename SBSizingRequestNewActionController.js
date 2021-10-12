@@ -2,10 +2,10 @@
     
      doInit : function(component, event, helper) {
      
-         if(component.get("v.modalContext") != "Clone"){
-            component.set("v.modalContext", "New");
-        }		
-     
+        if(component.get("v.modalContext") != "Clone" && component.get("v.recordId")){
+            component.set("v.modalContext", "Edit");
+        }
+            
         var showdialog = component.get("v.showDialog");
         if(showdialog == undefined || showdialog == "true"){
             helper.showHideModal(component, event);
@@ -15,10 +15,13 @@
     
       handleOnSubmit : function(component, event, helper) {     
         var sizingRequestObj = component.get("v.SizingRequestMap");
+          console.log(component.find("accountIdString"));
+          console.log(component.find("accountIdString").get("v.value"));
         var newMap = {
             RecordId: component.get("v.recordId"),
-            AccountId: component.find("accountIdString").get("v.value"), 
-          OpportunityId: component.find("opptyId").get("v.value") ,
+           // AccountId: component.find("accountIdString") ? component.find("accountIdString").get("v.value") : "",
+            AccountId: component.find("accountIdString").get("v.value"),
+            //OpportunityId: component.find("opptyId").get("v.value") ,
             //RequestType: component.find("reqType").get("v.value"),
             CompanyDomain: component.find("companyDomain").get("v.value"),
             AdditionalInfo: component.find("additionalInfo").get("v.value"),
