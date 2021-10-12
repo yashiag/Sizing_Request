@@ -28,7 +28,7 @@
     <div aura:id="editDialog" role="dialog" tabindex="-1" aria-labelledby="header43" class="slds-modal slds-modal">
         <div class="slds-modal__container">
             <div class="slds-modal__header">
-                <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close this window">
+                  <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close this window">
                     <lightning:buttonIcon iconName="utility:close" variant="bare-inverse" size="large" onclick="{!c.cancelDialog}" alternativeText="Close window." />
                 </button>
                 <h2 class="slds-text-heading--medium">{!v.modalContext} Sizing Request:PAN</h2>
@@ -43,7 +43,7 @@
                     <h3 class="slds-section__title slds-theme_shade primaryPaletteBorder"><span class="slds-p-horizontal--small slds-truncate">Information</span></h3>
                     <lightning:recordEditForm objectApiName="SizingRequest__c" class="recordEditForm" aura:id="sizingReqForm" recordId="{!v.recordId}">
                         <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
-                            <lightning:inputField aura:id="accountIdString" fieldName="Account__c" readonly="true" />
+                            <lightning:inputField aura:id="accountIdString" fieldName="Account__c"  />
                         </div>
                         <!--   <div class="slds-has-flexi-truncate slds-p-horizontal_medium" style="margin-top: 10px">
                             <lightning:inputField aura:id="opptyId" fieldName="Opportunity__c" readonly="true" />
