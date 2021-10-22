@@ -1,0 +1,470 @@
+/**
+*  @Name:          SBRouteToIsSavedController
+*  @Description:   Standard Controller Class to determine if a quote is saved, and route accordingly.
+*
+*  Change Log
+*  -----------------------------------------------------------
+*  Developer           Modification Date           Comments
+*  -----------------------------------------------------------
+*  Luv Mahajan          Aug/18/2020               NOVACPQ-850: Add Validations on click of Proceed To Approvals button.
+*  Bikram Thapa     12 july 2021    //CORTEX-2693 Fedramp Auto Approval For Amend/Renew
+*  Vignesh Nayak S     29 july 2021               NOVACPQ-2564 - update the quote status to approved/awaiting approval if the quote is already submitted for approval
+**/
+public without sharing class SBRouteToIsSavedController {
+
+    public static String applicationName = 'MKTP Application';
+    public static String moduleName = 'Approvals';
+    public static String className = 'SBRouteToIsSavedController'; 
+    public static String XSOAR_Tenant_Module = 'SB_XSOAR_MSSP_Tenant';
+
+    public String quoteId {get;set;}
+    public boolean isQLESaved {get; set;}
+    public boolean isError {get; set;}
+    public boolean displayPANConst{get;set;}
+    public boolean hasMSSPBase {get; set;}
+    public boolean hasMSSPTenant {get; set;}
+    public string signedSOW{get;set;}
+    public List<SBQQ__Quote__c> lstQuoteToUpdate; // NOVACPQ-2564
+    public String  opptyMgmtRecIdForFedRampAutoAprvl;//CORTEX-2693 Fedramp
+    public String  contractRecIdForFedRampAutoAprvl;//CORTEX-2693 Fedramp
+    public Static final String mktpSigedSOWModule = 'Mktp_PAN_Consult';
+    public Static final String mktpSigedSOWLabel = 'Signed_SOW';
+
+    public static final String msgQuoteNotSaved = 'Quote not Saved in QLE.';
+    public static final String msgPleaseSaveQLE = 'Please Save the Quote Line Editor, and then proceed with approvals.';
+    public static final String mktpConstDetectionTime = 'Quote_Saving_Detection_Time';
+    public static final String msgPrismaCloudBundle = 'You cannot submit a quote for Approvals for Prisma Cloud without bundles. Please do not clone this quote and please create a new Quote from Opportunity.';
+    public static final String emptyCartError = 'Kindly add products to proceed to the approval';
+    public static final String msgExpanseNoValidRequest = 'This configuration requires a sizing request to submit for approval';
+    public static final String msgExpanseIncorrectSKU = 'Configuration does not match sizing request. Please reconfigure Xpanse set before submitting for approval.';
+    public static final String APPROVAL_STATUS_APPROVED  = 'Approved'; //CORTEX-2693 Fedramp
+    public static final String FEDRAMP_PRODUCT_CODE = 'PAN-XDR-USG-CDS'; //CORTEX-2693 Fedramp
+    public static final String msgQuoteUncalculated = 'The quote is being recalculated, please refresh the page and try again. In case of any error, try to reconfigure products and save.';
+    public static final String msgMSSPTenantNoActiveParent = 'Please make sure that the quote has a Parent MSSP base contract with active MSSP Base Subscriptions.';
+    public static final String msgMSSPTenantInvalidDate = 'Base platform needs to be renewed in order proceed with Tenant quote.';
+   	public static final String msgMSSPDEMISTOMSSP = 'Product configuration is invalid for this quote. Please re-configure the MSSP Tenant set and Select PAN-DEMISTO-MSSP-TEN';
+    public static final String msgMSSPCORTEXXSOARTIM = 'Product configuration is invalid for this quote. Please re-configure the MSSP Tenant set and Select PAN-CORTEXXSOAR-TIM-MSSP-TEN';
+
+    // Comparing the difference between QL Last Modified Date and Quote's Created Date
+    public SBRouteToIsSavedController (ApexPages.StandardController controller) {
+        SBQQ__Quote__c recQuote = (SBQQ__Quote__c)controller.getRecord();
+        quoteId = recQuote.Id;
+        String accId;
+		
+        isQLESaved = false;
+        boolean isResourceRequestAdded = true;
+        isError = false;
+        
+        String constDetectionTime = MktpSettingsHelper.fetchMktpConstant(mktpConstDetectionTime).get(mktpConstDetectionTime);
+        signedSOW = MktpSettingsHelper.fetchMktpConstant(mktpSigedSOWModule).get(mktpSigedSOWLabel);
+        SBQQ__QuoteLine__c objQuoteLine;
+        try {
+            List<SBQQ__QuoteLine__c> objQuoteLines = [
+                SELECT Id, Name, LastModifiedDate, SBQQ__Quote__r.CreatedDate, SBQQ__Quote__r.is_Sales_Ops__c,SBQQ__Quote__r.is_Field_Editable__c,
+                SBQQ__Quote__r.IsSourceSaved__c, SBQQ__Quote__r.Clone_Source__c,Resource_Request__c,SBQQ__ProductCode__c, SBQQ__Quote__r.SBQQ__Opportunity2__c,
+                SBQQ__Quote__r.SBQQ__Opportunity2__r.Type, SBQQ__Quote__r.Original_Contract__c,SBQQ__Quote__r.SBQQ__MasterContract__c,
+                SBQQ__Quote__r.SBQQ__Opportunity2__r.Opportunity_Management__c,SBQQ__Quote__r.SBQQ__Opportunity2__r.SBQQ__RenewedContract__c, SBQQ__Quote__r.MSSP_Base_Contract__c,
+                SBQQ__Quote__r.SBQQ__Opportunity2__r.Opportunity_Management__r.FedRamp_Status__c, SBQQ__Product__r.Internal_SKU_Name__c, SBQQ__Quote__r.SBQQ__Type__c,SBQQ__Quote__r.SBQQ__Uncalculated__c, 
+                SBQQ__Quote__r.SBQQ__Status__c, SBQQ__Quote__r.ApprovalStatus__c, SBQQ__Quote__r.MSSP_Base_Contract__r.EndDate, SBQQ__SubscriptionTerm__c, SBQQ__EndDate__c, Internal_SKU_Name__c,SBQQ__Quote__r.SBQQ__Account__c
+                FROM SBQQ__QuoteLine__c
+                WHERE SBQQ__Quote__c =: quoteId
+                ORDER BY LastModifiedDate
+            ];
+
+
+            if(!objQuoteLines.isEmpty()){
+
+                //NOVACPQ-2562 :- Check to restrict activity if Quote has calculation pending.                
+                if(objQuoteLines[0].SBQQ__Quote__r.SBQQ__Uncalculated__c){
+                    ApexPages.addMessage(new ApexPages.Message (ApexPages.Severity.ERROR, msgQuoteUncalculated));
+                    isError = true;
+                }
+                // NOVACPQ-2564 - To keep the Quote status and the Approval status in sync.
+                if(!String.isBlank(objQuoteLines[0].SBQQ__Quote__r.ApprovalStatus__c) && !objQuoteLines[0].SBQQ__Quote__r.SBQQ__Uncalculated__c){
+                    if(objQuoteLines[0].SBQQ__Quote__r.ApprovalStatus__c == SBConstants.QUOTE_APPROVAL_STATUS_PENDING &&
+                            objQuoteLines[0].SBQQ__Quote__r.SBQQ__Status__c != SBConstants.QUOTE_STATUS_AWAITINGAPPROVAL ){
+                        lstQuoteToUpdate = new List<SBQQ__Quote__c>{new SBQQ__Quote__c(Id = quoteId, SBQQ__Status__c = SBConstants.QUOTE_STATUS_AWAITINGAPPROVAL )};
+                    }else if(objQuoteLines[0].SBQQ__Quote__r.ApprovalStatus__c == SBConstants.QUOTE_APPROVAL_STATUS_APPROVED && 
+                                (objQuoteLines[0].SBQQ__Quote__r.SBQQ__Status__c == SBConstants.QUOTE_STATUS_PENDING ||
+                                    objQuoteLines[0].SBQQ__Quote__r.SBQQ__Status__c == SBConstants.QUOTE_STATUS_AWAITINGAPPROVAL)){
+                        lstQuoteToUpdate = new List<SBQQ__Quote__c>{new SBQQ__Quote__c(Id = quoteId, SBQQ__Status__c = SBConstants.QUOTE_STATUS_APPROVED) };
+                    }
+                }
+
+                // Changes for NOVACPQ-1449 to make sure only Prisma Bundles are quoted
+                checkPrismaBundle(quoteId);
+
+                accId = objQuoteLines[0].SBQQ__Quote__r.SBQQ__Account__c;
+                validateExpanseBundleAndRequest(quoteId,accId);
+
+                String parentContId = '';
+                for(SBQQ__QuoteLine__c qle : objQuoteLines){
+                    if(qle.Internal_SKU_Name__c == constantMap.get('XSOAR_MSSP_Ten_SET')){
+                        hasMSSPTenant = true;
+                        system.debug('qle.SBQQ__Quote__r.MSSP_Base_Contract__c ' + qle.SBQQ__Quote__r.MSSP_Base_Contract__c);
+                        if(qle.SBQQ__Quote__r.MSSP_Base_Contract__c != null)
+                            parentContId = qle.SBQQ__Quote__r.MSSP_Base_Contract__c;
+                        
+                        system.debug(hasMSSPTenant);
+                        break;
+                    }
+                }
+
+                if(parentContId != null && parentContId != ''){
+                    system.debug(parentContId);
+                    Set<String> MSSPBaseProducts = new Set<String>(constantMap.get('XSOAR_MSSP_Base_Code').split(','));
+                    For(SBQQ__Subscription__c subs : [SELECT Id, Name, Product_Code__c
+                                                       FROM SBQQ__Subscription__c
+                                                       WHERE SBQQ__Contract__c =: parentContId
+                                                       AND Product_Code__c in : MSSPBaseProducts
+                                                       AND SBQQ__EndDate__c > Today])
+                    {
+                        hasMSSPBase = true;
+                        break;
+                    }
+                } else if(hasMSSPTenant!=null && hasMSSPTenant){ // Added null check to avoid null pointer.
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgMSSPTenantNoActiveParent));
+                    isError = true;
+                }
+                
+                //CORTEX-3347 XSOAR MSSP Tenant
+                if(hasMSSPTenant!=null && hasMSSPTenant){  // Added null check to avoid null pointer.
+                    validateMSSPTenant(quoteId);
+                }
+
+                if((objQuoteLines[0].SBQQ__Quote__r.Clone_Source__c!=null && objQuoteLines[0].SBQQ__Quote__r.IsSourceSaved__c ) ||
+                    (objQuoteLines[0].LastModifiedDate >= objQuoteLines[0].SBQQ__Quote__r.CreatedDate.addSeconds(Integer.valueOf(constDetectionTime))) ){
+
+                    isQLESaved = true;
+                } else {
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgQuoteNotSaved));
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgPleaseSaveQLE));
+                    isError = true;
+                }
+
+                //CORTEX-2693 Fedramp
+                for(SBQQ__QuoteLine__c quoteItem : objQuoteLines) {
+                    if(quoteItem.SBQQ__ProductCode__c == FEDRAMP_PRODUCT_CODE &&
+                        (quoteItem.SBQQ__Quote__r.SBQQ__Type__c == 'Amendment' || quoteItem.SBQQ__Quote__r.SBQQ__Type__c == 'Renewal') &&
+                        quoteItem.SBQQ__Quote__r.SBQQ__Opportunity2__r.Opportunity_Management__r.FedRamp_Status__c != APPROVAL_STATUS_APPROVED) {
+                        opptyMgmtRecIdForFedRampAutoAprvl = quoteItem.SBQQ__Quote__r.SBQQ__Opportunity2__r.Opportunity_Management__c;
+                        contractRecIdForFedRampAutoAprvl = getContractIdForFedRampAutoApproval(quoteItem);
+                        break;
+                    }
+                }
+                //Ends
+
+                for(SBQQ__QuoteLine__c quoteItem : objQuoteLines){
+                    if(quoteItem.SBQQ__ProductCode__c=='PAN-CONSULT-CUSTOM'){
+                        displayPANConst = true;
+                        if((quoteItem.SBQQ__Quote__r.is_Sales_Ops__c!=true && !quoteItem.SBQQ__Quote__r.is_Field_Editable__c)
+                           && quoteItem.Resource_Request__c==null
+                         ){
+                            isError = true;
+                            isResourceRequestAdded = false;
+                            break;
+                        }
+                    }
+                }
+                if(isResourceRequestAdded==false){
+                    string error = MktpSettingsHelper.fetchMktpConstantValue('Mktp_PAN_Consult','Request_Resources');
+                     ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, error));
+                }
+            } else {
+                ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, emptyCartError));
+                isError = true;
+            }
+            
+            List<String> lstValError = MktpQuoteApprovalController.validateRequiredFieldsOnQuote(quoteId);
+            for(String err:lstValError){
+                ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, err));
+                isQLESaved = false;
+            }
+        }catch (Exception ex) {
+            if (objQuoteLine == null) {
+                ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgQuoteNotSaved));
+                ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgPleaseSaveQLE));
+            }else{
+                ApexPages.addMessage(new ApexPages.Message (ApexPages.Severity.ERROR,ex.getMessage()));
+                isError = true;
+            }
+        }
+        System.debug('isQLESaved --> ' + isQLESaved  );
+    }
+
+    public pageReference CheckPANAndRedirect(){
+        // NOVACPQ-2564
+        boolean isQuoteStatusUpdated;
+        if(lstQuoteToUpdate != null && !lstQuoteToUpdate.isEmpty() ){
+            isQuoteStatusUpdated = updateQuoteStatus(lstQuoteToUpdate);
+        }
+        //CORTEX-2693 Fedramp
+        if(String.isNotBlank(contractRecIdForFedRampAutoAprvl) && String.isNotBlank(opptyMgmtRecIdForFedRampAutoAprvl)) {
+            //Check if fedramp auto approval is valid based on Contract's Subscriptions.
+            if(checkFedRampOnSubscriptionForAutoAprvl(contractRecIdForFedRampAutoAprvl)) {
+                //If True update the opportunity management record.
+                updateFedRampAutoApprovalOnOppMgmt(opptyMgmtRecIdForFedRampAutoAprvl);
+            }
+        }
+        //CORTEX-2693 Fedramp Ends
+        
+        if(isQLESaved && !isError){
+            if(displayPANConst != true )
+                return  redirectToApproval();
+        }
+        return null;
+    }
+
+    // Redirect to Approval, on successful validation that the Quote is Saved
+    public PageReference redirectToApproval() {
+        Pagereference pageref = null;
+        if(isQLESaved && !isError){
+            pageref = new PageReference('/apex/MktpQuoteApprovalVf?id=' + quoteId );
+            pageref.setRedirect(true);
+        }
+        return pageref;
+    }
+
+    // Redirect to Quote Line Editor, to save the Quote Line Editor
+    public PageReference routeTOQLE() {
+        Pagereference pageref = new PageReference('/apex/MktpQuoteConfigureProducts?id=' + quoteId );
+        pageref.setRedirect(true);
+        return pageref;
+    }
+
+    // Redirect to the Quote record, for cancel action
+    public PageReference closeAction() {
+        Pagereference pageref = new PageReference('/' + quoteId );
+        pageref.setRedirect(true);
+        return pageref;
+    }
+
+    /*
+     * If the Quote has prisma products but does does not have the bundle wrapper,
+     * stop the user from proceeding
+     */
+    public void checkPrismaBundle(String quoteId){
+        boolean hasBundleWrapper = false;
+        boolean hasPrismaProducts = false;
+
+        for(SBQQ__QuoteLine__c qtLine : [SELECT Id, SBQQ__ProductCode__c, IsWrapperSKU__c,
+                                         SBQQ__Product__r.Nova_Products__c, Product_Group__c
+                                         FROM SBQQ__QuoteLine__c WHERE SBQQ__Quote__c =: quoteId
+                                         AND Product_Group__c IN ('Redlock','Twistlock')
+                                         AND SBQQ__Product__r.Nova_Products__c = true
+                                         Order By IsWrapperSKU__c DESC])
+        {
+            hasPrismaProducts = true;
+            if(qtLine.IsWrapperSKU__c){
+                hasBundleWrapper = true;
+            }
+        }
+
+        if( hasPrismaProducts && !hasBundleWrapper){
+            ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgPrismaCloudBundle));
+            isError = true;
+        }
+    }
+
+    /*
+     * If the Quote has Expanse set, check for valid sizing request
+     * check if the primary request tier and quote's tier matches
+     * if fails, stop the user from proceeding
+     */
+    public void validateExpanseBundleAndRequest(String quoteId, String accId){
+        decimal aumVal = 0;
+        boolean hasError = false;
+        String platformTierSKU = '';
+        SB_Sizing_Tier__mdt sizeTier;
+        boolean hasExpander = false;
+        boolean sizingRequestError = false;
+        boolean incorrectPlatformSKU = false;
+
+        for(SizingRequest__c sizReq : [SELECT Id, AUM__c, Opportunity__c,Account__c FROM SizingRequest__c
+                                       WHERE isPrimary__c = true AND Status__c = 'Completed'
+                                       AND Account__c =: accId AND AUM__c > 0])
+        {
+            //get the AUM value from the primary sizing request
+            aumVal = (aumVal == 0) ? sizReq.AUM__c : aumVal;
+        }
+
+        if(aumVal > 0){
+            //get the sizing tier metadata record corresponding to the AUM
+            sizeTier = MktpSettingsHelper.getExpanseTiers(aumVal);
+            platformTierSKU = sizeTier.Product_Code__c;
+        }
+
+        for(SBQQ__QuoteLine__c qle : [SELECT Id, IsWrapperSKU__c, Product_Group__c,
+                                      SBQQ__ProductCode__c, SBQQ__Quote__r.Expanse_Platform_Tier__c
+                                      FROM SBQQ__QuoteLine__c WHERE SBQQ__Quote__c =: quoteId AND
+                                      Product_Group__c = :SBConstants.EXPANDER_PRODUCT_GROUP Order By IsWrapperSKU__c DESC])
+        {
+            if(hasExpander){
+                if(sizeTier != null){
+                    if(qle.SBQQ__ProductCode__c == platformTierSKU){
+                        hasError = false;
+                        incorrectPlatformSKU = false;
+                        break;
+                    } else {
+                        	if( qle.SBQQ__ProductCode__c=='PAN-EXP-LINK-DL' || qle.SBQQ__ProductCode__c=='PAN-EXP-MS-ILI')
+                        	{
+                                hasError = false;
+                        		incorrectPlatformSKU = false;
+                       		 	break;
+                       		 }
+                       /* if( )
+                        	{
+                                hasError = false;
+                        		incorrectPlatformSKU = false;
+                       		 	break;
+                       		 }
+                       */ 
+                        incorrectPlatformSKU = true;
+                   	 }
+                } else {
+                         sizingRequestError = true;
+                }
+            }
+
+            if(qle.IsWrapperSKU__c){
+                hasExpander = true;
+            }
+        }
+
+        if(incorrectPlatformSKU){
+            ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgExpanseIncorrectSKU));
+            isError = true;
+        }
+
+        if(sizingRequestError){
+            ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgExpanseNoValidRequest));
+            isError = true;
+        }
+    }
+
+    /**
+     * CORTEX-2693 Fedramp Auto Approval
+     * Check Previous Order and see if Subscription for fedramp exists
+     * Check Original Contract
+     */
+    public static String getContractIdForFedRampAutoApproval(SBQQ__Quoteline__c ql){
+
+        String  retContractId = '';
+        String  fedRampOppMgmtId = '';
+        System.debug('validateRequiredFieldsOnQuoteLId '+ ql.Id);
+
+        if(ql.SBQQ__Product__r.Internal_SKU_Name__c == FEDRAMP_PRODUCT_CODE &&
+          ql.SBQQ__Quote__r.SBQQ__Opportunity2__r.Opportunity_Management__r.FedRamp_Status__c != APPROVAL_STATUS_APPROVED
+        ) {
+            if(ql.SBQQ__Quote__r.SBQQ__Type__c == 'Amendment') {
+                retContractId = ql.SBQQ__Quote__r.Original_Contract__c != NULL ? ql.SBQQ__Quote__r.Original_Contract__c : ql.SBQQ__Quote__r.SBQQ__MasterContract__c;
+            } else if(ql.SBQQ__Quote__r.SBQQ__Type__c == 'Renewal') {
+                retContractId = ql.SBQQ__Quote__r.SBQQ__Opportunity2__r.SBQQ__RenewedContract__c;
+            }
+        }
+        return retContractId;
+    }
+
+    //CORTEX-2693 Fedramp
+    public static Boolean checkFedRampOnSubscriptionForAutoAprvl(String contractId){
+        Boolean retValue = FALSE;
+        System.debug(contractId);
+        List<SBQQ__Subscription__c> subs = [SELECT Id, SBQQ__Contract__r.SBQQ__RenewalOpportunity__c FROM SBQQ__Subscription__c WHERE Internal_SKU_Name__c = :FEDRAMP_PRODUCT_CODE AND SBQQ__Contract__c = :contractId];
+        if(!subs.isEmpty()) {
+            retValue = TRUE;
+        }
+        return retValue;
+    }
+
+    //CORTEX-2693 Fedramp
+    public static String updateFedRampAutoApprovalOnOppMgmt(String oppMgmtId){
+        String retValue = '';
+        Opportunity_Management__c oppMgtRec = new Opportunity_Management__c(Id=oppMgmtId);
+        oppMgtRec.Fedramp_Approved_Rejected_by__c = userInfo.getUserId();
+        oppMgtRec.Fedramp_Approved_Rejected_Date__c = Date.Today();
+        oppMgtRec.FedRamp_Status__c  = APPROVAL_STATUS_APPROVED;
+        try {
+            database.update(oppMgtRec);
+            retValue = 'Success';
+            System.debug('SBRouteToIsSavedController after Oppty Mgmt Update' + Limits.getQueries());
+        } catch (Exception e) {
+            System.debug('Stack trace:' + e.getStackTraceString());
+            ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.ERROR, e.getMessage()));
+            retValue = ('Error: ' + e.getMessage());
+        }
+        return retValue;
+    }
+
+    //NOVACPQ-2564
+    public static boolean updateQuoteStatus(list<SBQQ__Quote__c> lstQuote){
+        String methodName = 'updateQuoteStatus';
+        boolean isSuccess;
+        try {
+            update lstQuote;
+            isSuccess = true;
+        } catch (Exception ex) {
+            MktpException.Log(ex , applicationName , moduleName , className, methodName, new list<String>{JSON.serialize(lstQuote)});
+            isSuccess = false;
+            System.debug('Error saving quote status '+ex.getMessage());
+        }
+        return isSuccess;
+    }
+    
+    //CORTEX-3347
+    public void validateMSSPTenant(String quoteId){
+        //public Set<String> MSSPBaseProducts = new Set<String>(SBConstants.XSOAR_MSSP_Base_Code.split(','));
+        Set<String> XSOARMSSPTenCode = constantMap.get('XSOAR_MSSP_Tenant_SKU_Code') != null ? 
+            new Set<String>(constantMap.get('XSOAR_MSSP_Tenant_SKU_Code').split(',')) : new Set<String>();
+        String XSOARMSSPBaseCodes = constantMap.get('XSOAR_MSSP_Base_Code');
+        for(SBQQ__QuoteLine__c qle : [SELECT Id, SBQQ__SubscriptionTerm__c, SBQQ__ProductCode__C, Internal_SKU_Name__c, 
+                                      SBQQ__EndDate__c ,SBQQ__Quote__r.SBQQ__Type__c, SBQQ__Quote__r.MSSP_Base_Contract__c, 
+                                      SBQQ__Quote__r.MSSP_Base_Contract__r.EndDate, SBQQ__Quote__r.MSSP_Base_Contract__r.MSSP_Base_Contract_Subs__c
+                                      FROM SBQQ__QuoteLine__c WHERE SBQQ__Quote__c =: quoteId AND Internal_SKU_Name__c IN : XSOARMSSPTenCode])
+        {
+            String MSSPBase = qle.SBQQ__Quote__r.MSSP_Base_Contract__r.MSSP_Base_Contract_Subs__c != null ?
+                qle.SBQQ__Quote__r.MSSP_Base_Contract__r.MSSP_Base_Contract_Subs__c : '';
+            
+            system.debug('MSSPBase ' + MSSPBase);
+            system.debug('qle.Internal_SKU_Name__c ' + qle.Internal_SKU_Name__c);
+            
+            if(qle.SBQQ__Quote__r.SBQQ__Type__c == 'Quote'){
+                Integer subsTerm = qle.SBQQ__SubscriptionTerm__c != null ? Integer.valueOf(qle.SBQQ__SubscriptionTerm__c) : 0;
+                Date QLEEndDate = Date.today().addMonths(subsTerm);
+                
+                if(QLEEndDate > qle.SBQQ__Quote__r.MSSP_Base_Contract__r.EndDate){
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgMSSPTenantInvalidDate));
+                    isError = true;
+                }
+            } else {
+                if(qle.SBQQ__EndDate__c > qle.SBQQ__Quote__r.MSSP_Base_Contract__r.EndDate){
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgMSSPTenantInvalidDate));
+                    isError = true;
+                }
+            }
+            
+            if(XSOARMSSPBaseCodes != null && XSOARMSSPBaseCodes != '' && XSOARMSSPBaseCodes.containsIgnoreCase(MSSPBase)){
+                if(MSSPBase.equalsIgnoreCase('PAN-DEMISTO-MSSP-BASE') && !qle.Internal_SKU_Name__c.equalsIgnoreCase('PAN-DEMISTO-MSSP-TEN')){
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgMSSPDEMISTOMSSP));
+                    isError = true;
+                } else if(MSSPBase.equalsIgnoreCase('PAN-CORTEXXSOAR-TIM-MSSP-BASE') && !qle.Internal_SKU_Name__c.equalsIgnoreCase('PAN-CORTEXXSOAR-TIM-MSSP-TEN')){
+                    ApexPages.addMessage (new ApexPages.Message (ApexPages.Severity.ERROR, msgMSSPCORTEXXSOARTIM));
+                    isError = true;
+                }
+            }
+        } 
+    }
+    
+    /**
+    * @description to fetch the constant values from the metadata types
+    * @@return  constantMap  map of constant metadata type
+    */
+    public static Map<String, String> constantMap {
+        get {
+            if (constantMap == null) {
+                constantMap = MktpSettingsHelper.fetchMktpConstant(XSOAR_Tenant_Module);
+            }
+            return constantMap;
+        }
+        set;
+    }
+}
