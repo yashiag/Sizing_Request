@@ -11,6 +11,7 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
     }
  
     public void bulkAfterInsert(List<sObject> lstNew, Map<Id, sObject> mapNew) {
+        System.debug('New List'+ lstNew);
         Set<Id> accIds  = new Set<Id>();
         Set<Id> sizingReqIds = new Set<Id>();
         List<SizingRequest__c> sizingRequests = (List<SizingRequest__c>)lstNew;
@@ -20,8 +21,9 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
         }
         
         if (!accIds.isEmpty() && !sizingReqIds.isEmpty()) {
-            updateExistingRequests(accIds, sizingReqIds);
             updateQuotesOnNewRequest(accIds);
+            updateExistingRequests(accIds, sizingReqIds);
+            
         }
     }
  
@@ -36,36 +38,45 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
         List<SizingRequest__c> sizingRequests = (List<SizingRequest__c>)lstNew;
         Map<Id, SizingRequest__c> oldMap = (Map<Id, SizingRequest__c>) mapOld;
        List<Account> AccountToUpdate = new List<Account>();
-        
+        List<Account> AccountToUpdate1 = new List<Account>();
         for (SizingRequest__c req : sizingRequests) {
             SizingRequest__c reqOld = oldMap.get(req.Id);
-            
+       
             if((req.Status__c != reqOld.Status__c || req.AUM__c != reqOld.AUM__c || req.isPrimary__c != reqOld.isPrimary__c) 
                && req.Status__c == SR_STATUS_COMPLETE && req.isPrimary__c ) {
                
                    ////////////////////////////////////////
-                   /*
-                    if (req.Account__c != null && req.AUM__c !=null && req.Account__r.AUM__c != req.AUM__c) {
+                   
+                    if ( req.AUM__c !=null && req.Status__c == SR_STATUS_COMPLETE && req.isPrimary__c ) {
 							Account a=new Account(Id=req.Account__c);
 							a.AUM__c=req.AUM__c;
-				
-				
+                        	a.Sizing_Request_Status__c=req.Status__c;
 							AccountToUpdate.add(a);
-           			 }*/
+           			 }
                     accIdToAUM.put(req.Account__c, req.AUM__c);
 				
+                }else
+                {
+                         Account a1=new Account(Id=req.Account__c);
+            			a1.Sizing_Request_Status__c=req.status__c;
+                    	a1.AUM__c=req.AUM__c;
+                    	AccountToUpdate1.add(a1);
                 }
             
             if (req.Status__c != reqOld.Status__c && req.Status__c == SR_STATUS_COMPLETE) {
                 completedRequestIds.add(req.Id);
             }
         }
+        if(!AccountToUpdate1.isEmpty())
+        {
+            update AccountToUpdate1;
+        }
         /////////////////////////////
-        /*if(!AccountToUpdate.isEmpty())
+        if(!AccountToUpdate.isEmpty())
 			{
 			update AccountToUpdate;
 			
-			}*/
+			}
     //////////////////////////////////
         if(!accIdToAUM.isEmpty()){
             updateRelatedQuotesAccId(accIdToAUM );
@@ -115,9 +126,57 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
             }
         }
         
-        if (!requestsToUpdate.isEmpty()) {
+         if (!requestsToUpdate.isEmpty()) {
             update requestsToUpdate;
         }
+         //New Requests--Account Update and Quote Update
+         List<SizingRequest__c>  newReqs=[SELECT Id, isPrimary__c, Account__c,AUM__c,Status__c FROM SizingRequest__c WHERE Account__c in : accIds AND Id =:sizingReqIds];
+         System.debug(' updateExistingRequests newReqs ' + newReqs);
+        Map<Id, Decimal> accIdToAUM  = new Map<Id, Decimal>();
+		List<Account> acc=new List<Account>();        
+        Set<Id> completedRequestIds = new Set<Id>();
+      // List<SizingRequest__c> Sr=new List<SizingRequest__c>();
+        if(!newReqs.isEmpty())
+        {
+            for(SizingRequest__c newReq:newReqs)
+        	{
+            if(newReq.isPrimary__c ==true && newReq.AUM__c != null && newReq.Status__c == SR_STATUS_COMPLETE )
+            	{
+               
+                Account a1=new Account(Id=newReq.Account__c);
+							a1.AUM__c=newReq.AUM__c;
+                        	a1.Sizing_Request_Status__c=newReq.Status__c;
+                    //newReq.Request_Type__c='System Generated';
+                    
+                	acc.add(a1);
+                    //Sr.add(newReq);
+                accIdToAUM.put(newReq.Account__c, newReq.AUM__c);
+                completedRequestIds.add(newReq.Id);
+            	}
+        	}
+        
+        }
+       			 if(!acc.isEmpty())
+        			{
+           			 update acc;
+        			}
+        		
+        		if(!accIdToAUM.isEmpty())
+        			{
+         			updateRelatedQuotesAccId(accIdToAUM);   
+        			}
+        		if(!completedRequestIds.isEmpty())
+        			{
+           			sendEmailForCompletedReq(completedRequestIds); 
+        			}
+				/*if(!Sr.isEmpty())
+                {
+                    update Sr;
+                }
+        */
+        
+        
+       
     }
     
     public static void updateRelatedQuotesAccId(Map<Id, Decimal> accIdToAUM){
@@ -176,7 +235,7 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
         }
     }
     
-    public static void updateRelatedQuotes(Map<Id, Decimal> oppIdToAUM){
+    /*public static void updateRelatedQuotes(Map<Id, Decimal> oppIdToAUM){
         List<SB_Sizing_Tier__mdt> expanseTiers = MktpSettingsHelper.getExpanseTiers();
         Map<Id, String> oppToProductMap = getOppToProductMap(oppIdToAUM, expanseTiers);
         
@@ -218,13 +277,13 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
             }
         }
     }
-    
+    */
     /*
      * @param oppIdToAUM - Map of Opportunity Id to the AUM of it's primary sizing request
      * @param expanseTiers - List of the expanse platform tier metadata
      * returns - Map of Opportunity Id to the Platform Tier product corresponding to the AUM
     */
-    public static Map<Id, String> getOppToProductMap(Map<Id, Decimal> oppIdToAUM, List<SB_Sizing_Tier__mdt> expanseTiers){
+   /* public static Map<Id, String> getOppToProductMap(Map<Id, Decimal> oppIdToAUM, List<SB_Sizing_Tier__mdt> expanseTiers){
         Map<Id, String> oppToProductMap = new Map<Id, String>();
         
         for (Id oppId : oppIdToAUM.keySet()) {
@@ -245,7 +304,7 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
         }
         
         return oppToProductMap;
-    }
+    }*/
     
     /*
      * @param oppIdToAUM - Map of Opportunity Id to the AUM of it's primary sizing request
@@ -309,7 +368,7 @@ public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
         return [SELECT Id, Expanse_Platform_Tier__c, SBQQ__Opportunity2__c, SBQQ__Type__c,Original_Contract__c, Original_Contract__r.SBQQ__Opportunity__c,Original_Contract__r.AccountId,SBQQ__Account__c FROM SBQQ__Quote__c WHERE SBQQ__Account__c in : accIds AND SBQQ__Status__c='Pending'];
    }
     
-    public static List<SBQQ__Quote__c> getQuotesByOppIds (Set<Id> oppIds) {
+   /* public static List<SBQQ__Quote__c> getQuotesByOppIds (Set<Id> oppIds) {
         return [SELECT Id, Expanse_Platform_Tier__c, SBQQ__Opportunity2__c, SBQQ__Type__c,Original_Contract__c, Original_Contract__r.SBQQ__Opportunity__c FROM SBQQ__Quote__c WHERE SBQQ__Opportunity2__c in : oppIds];
-    }
+    }*/
 }
