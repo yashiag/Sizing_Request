@@ -1,0 +1,67 @@
+@isTest
+public class SBSizingRequestControllerTest {
+
+    @isTest
+    private static void testSaveSizingRequest() {
+        List<User> u = MktpSbqqTestDataFactory.createAdminUsers();
+        Map<String, String> sizingRequestMap = new Map<String, String>();
+        Map<String, String> sizingRequestMap1 = new Map<String, String>();
+        List<Account> actsList = TestDataUtil.createAccounts(1, true, new Map<String, String> {'name' => 'testSizingReq'});
+        
+        Opportunity opp =new Opportunity(Name = 'OpportunityName1', StageName = OpportunityConstants.STAGE_NAME_OPENQUALIFIED,
+                              CloseDate = Date.newInstance(2016, 10, 26), AccountId = actsList[0].Id);
+        insert opp;
+        
+        SizingRequest__c sizReq = new SizingRequest__c();
+        sizReq.Account__c = actsList[0].Id;
+        sizReq.AdditionalInfo__c = 'test Info';
+        //sizReq.Opportunity__c = opp.Id;
+        sizReq.Request_Type__c = 'REP REQUESTED';
+        sizReq.Status__c = 'Completed';
+        sizReq.isPrimary__c = true;
+        sizReq.Company_Domains__c = 'test Domain';
+        insert sizReq;
+        
+        SizingRequest__c sizReq1 = new SizingRequest__c();
+        sizReq1.Account__c = actsList[0].Id;
+        sizReq1.AdditionalInfo__c = 'test Info';
+        //sizReq.Opportunity__c = opp.Id;
+        sizReq1.AUM__c=234568;
+        sizReq1.Request_Type__c = 'SYSTEM GENERATED';
+        sizReq1.Status__c = 'Completed';
+        sizReq1.isPrimary__c = true;
+        sizReq1.Company_Domains__c = 'test Domain';
+        insert sizReq1;
+       //String aum= String.valueOf(sizReq1.AUM__c); 
+        
+        test.startTest();
+        sizingRequestMap.put('RecordId', sizReq.Id);
+        sizingRequestMap.put('AccountId', sizReq.Account__c);
+       // sizingRequestMap.put('OpportunityId', opp.Id);
+        sizingRequestMap.put('RequestType', sizReq.Request_Type__c);
+        sizingRequestMap.put('CompanyDomain', sizReq.Company_Domains__c);
+        sizingRequestMap.put('AdditionalInfo', sizReq.AdditionalInfo__c);
+        sizingRequestMap.put('IsPrimary', 'true');
+        
+        sizingRequestMap1.put('RecordId', sizReq1.Id);
+        sizingRequestMap1.put('AccountId', sizReq1.Account__c);
+       	sizingRequestMap1.put('Aum','234568');
+        sizingRequestMap1.put('Status',sizReq1.Status__c);
+        sizingRequestMap1.put('RequestType', sizReq1.Request_Type__c);
+        sizingRequestMap1.put('CompanyDomain', sizReq1.Company_Domains__c);
+        sizingRequestMap1.put('AdditionalInfo', sizReq1.AdditionalInfo__c);
+        sizingRequestMap1.put('IsPrimary', 'true');
+        
+        system.debug('sizingRequestMap '+ sizingRequestMap);
+            
+       // SBSizingRequestController.getOpptyAccountInfo(opp.Id);
+        System.runAs(u[0]) {
+            SBSizingRequestController.fetchUserInfo();
+            SBSizingRequestController.saveSizingRequest(sizingRequestMap);
+             SBSizingRequestController.saveSizingRequest(sizingRequestMap1);
+            sizingRequestMap.put('RecordId', null);
+            SBSizingRequestController.saveSizingRequest(sizingRequestMap);
+        }
+        test.stopTest();
+    }
+}
