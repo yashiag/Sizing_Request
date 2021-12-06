@@ -1,0 +1,67 @@
+ public static void setExpanseProductTier(List<SBQQ__Quote__c> quotes, Contract con) {
+        Set<String> accIds = new Set<String>();
+        for (SBQQ__Quote__c quote : quotes) {
+            //if (null != oldQuote && null != oldQuote.SBQQ__Opportunity2__c && null != quote.SBQQ__Opportunity2__c && oldQuote.SBQQ__Opportunity2__c != quote.SBQQ__Opportunity2__c) {
+                accIds.add(quote.SBQQ__Account__c);
+            //}
+        }
+        String originalAccId;
+        if (null != con) {
+            String expTierSku;
+            for (SBQQ__Subscription__c sub : con.SBQQ__Subscriptions__r) {
+                if (String.isNotBlank(sub.Product_Code__c) && sub.Product_Code__c.containsIgnoreCase('PAN-EXP-EXPNDR-DLF')) {
+                    expTierSku = sub.Product_Code__c;
+                    break;
+                }
+            }
+            if (String.isNotBlank(expTierSku)) {
+                for (SBQQ__Quote__c quote : quotes) {
+                    quote.Expanse_Platform_Tier__c = expTierSku;
+                }
+            }
+            
+            originalAccId = con.AccountId;
+            if (String.isNotBlank(originalAccId)) {
+                accIds.add(originalAccId);
+            } 
+        }
+        if (!accIds.isEmpty()) {
+            System.debug('SBQuoteService.setExpanseProductTier accIds ' + accIds);
+            List<SizingRequest__c> sizingRequests = [SELECT Id,Account__c, AUM__c,Status__c FROM SizingRequest__c WHERE Account__c =: accIds AND isPrimary__c = true AND Status__c='Completed' ];
+            System.debug('SBQuoteService.setExpanseProductTier sizingRequests ' + sizingRequests);
+            if (null != sizingRequests && !sizingRequests.isEmpty()) {
+                Map<Id, Decimal> accIdToAUM = new Map<Id, Decimal>();
+                Map<Id, String> accIdToStatus= new Map<Id, String>();
+                
+                for (SizingRequest__c sReq : sizingRequests) {
+                    accIdToAUM.put(sReq.Account__c, sReq.AUM__c);
+                    accIdToStatus.put(sReq.Account__c, sReq.Status__c);
+                }
+                System.debug('SBQuoteService.setExpanseProductTier accIdToAUM ' + accIdToAUM);
+                List<SB_Sizing_Tier__mdt> expanseTiers = MktpSettingsHelper.getExpanseTiers();
+                Map<Id, String> accToProductMap = SBSizingRequestTriggerHandler.getAccToProductMap(accIdToAUM, expanseTiers);
+                System.debug('SBQuoteService.setExpanseProductTier accToProductMap ' + accToProductMap);
+                if (!accToProductMap.isEmpty()) {
+                    for (SBQQ__Quote__c quote : quotes) {
+                        String tier = accToProductMap.get(quote.SBQQ__Account__c);
+                        if(accIdToAUM.containsKey(originalAccId) && 
+                           (!accIdToAUM.containsKey(quote.SBQQ__Account__c) || 
+                            accIdToAUM.get(originalAccId) > accIdToAUM.get(quote.SBQQ__Account__c)) ) {
+                            tier = accToProductMap.get(originalAccId);
+                        }
+                        System.debug('SBQuoteService.setExpanseProductTier tier ' + tier);
+                        if(null == quote.Expanse_Platform_Tier__c || quote.Expanse_Platform_Tier__c != tier) {
+                            quote.Expanse_Platform_Tier__c = tier;
+                        }
+                        if(!accIdToStatus.isEmpty())
+                        {
+                            quote.Sizing_Request_AUM_Value__c=accIdToAUM.get(quote.SBQQ__Account__c);
+                            quote.Sizing_Request_Current_Status__c=accIdToStatus.get(quote.SBQQ__Account__c);
+                        }
+                        System.debug('SBQuoteService.setExpanseProductTier Expanse_Platform_Tier__c ' + quote.Expanse_Platform_Tier__c);
+                    }
+                    //update quotes;
+                }
+            }
+        }
+    }
