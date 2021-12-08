@@ -1,0 +1,167 @@
+@IsTest
+private class SBQuoteLineUpgradeControllerTest {
+
+    private static Map<String, String> mapTestData = null;
+    private static Opportunity oppty;
+    private static List<Account> actsList;
+    private static SBQQ__Quote__c qte;
+    private static Contract contrct;
+    private static SBQQ__Subscription__c sub;
+    private static SBQQ__QuoteLine__c qteLine ;
+    private static Product2 prod; 
+    private static list<Id> prdRelIds;
+    private static PricebookEntry pbEntry;
+     
+    static{
+        Id profileId = [SELECT Id FROM Profile WHERE Name = :TestDataUtil.PROFILE_SYSTEM_ADMINISTRATOR].Id;
+        actsList = TestDataUtil.createAccounts(2, true, new Map<String, String> {'name' => 'ActName','Billing_Street__c' => '123 St',
+            'Billing_City__c' => 'Santa Clara', 'Billing_State__c' => 'CA', 'Billing_Country__c' => 'United States', 'Billing_Zip__c' => '95054'});
+        System.debug('actsList-------->'+actsList);
+        PAN_Distributors__c pd = new PAN_Distributors__c();
+        pd.Name = 'In Distributer';
+        pd.Account_Id__c = actsList[0].id;
+        pd.Country__c = 'Germany';
+        pd.Theater__c = 'INTL';
+        insert pd;
+        
+        //actsList = TestDataUtil.createAccounts(2, true, new Map<String, String> {'name' => 'ActName'});
+        Pricebook2 customPB = new Pricebook2( Name = 'Palo Alto Networks MarketPlace Price Book', Description = 'Palo Alto Networks MarketPlace Price Book', IsActive = true);
+        insert customPB;
+        
+        Id pricebookId = Test.getStandardPricebookId();
+        
+         prod = new Product2(QuantityUnitOfMeasure='TB',Name = 'Product X', ProductCode = 'Pro-X', isActive = true);
+        insert prod;
+
+        System.debug('prod-------->'+prod);
+        oppty = new Opportunity(Name = 'OpportunityName1', SBQQ__Renewal__c = true, StageName = OpportunityConstants.STAGE_NAME_OPENQUALIFIED,
+                                CloseDate = system.today().addMonths(1), AccountId = actsList[0].Id, Quote_Type__c = 'Steelbrick Quote',
+                                Distributor__c = pd.Id,OwnerId=UserInfo.getUserId(),PriceBook2Id= Test.getStandardPricebookId());
+        insert oppty;
+        
+         pbEntry = new PricebookEntry();
+        pbEntry.Pricebook2Id = pricebookId;
+        pbEntry.Product2Id = prod.Id;
+        pbEntry.UnitPrice = 10.00;
+        pbEntry.IsActive = true;
+        insert pbEntry;
+        System.debug('pbEntry-------->'+pbEntry);
+        qte = new SBQQ__Quote__c();
+        qte.SBQQ__Opportunity2__c  = oppty.Id;
+        qte.SBQQ__Account__c = actsList[0].Id;
+        qte.SBQQ__Primary__c = True;
+        qte.Billing_Account_Name__c = actsList[0].Id;
+        qte.SBQQ__PriceBook__c = pricebookId;
+        insert qte;
+        
+        
+        qteLine = new SBQQ__QuoteLine__c();
+        qteLine.SBQQ__Quote__c = qte.Id;
+        qteLine.SBQQ__ListPrice__c =100.0;
+        qteLine.SBQQ__Discount__c = 0.0;
+        qteLine.SBQQ__AdditionalDiscountAmount__c = 0.0;
+        qteLine.SBQQ__Incomplete__c = true;
+        qteLine.SBQQ__SubscriptionTerm__c = 12.0;
+        qteLine.SBQQ__StartDate__c = System.today();
+        qteLine.SBQQ__EndDate__c = System.today()+30;
+        qteLine.SBQQ__Product__c = prod.Id;
+        qteLine.SBQQ__Quantity__c = 1;
+        qteLine.Internal_SKU_Name__c = 'PAN-XDR-PREM';
+        insert qteLine;
+        System.debug('qteLine-------->'+qteLine);
+        
+         qteLine = new SBQQ__QuoteLine__c();
+        qteLine.SBQQ__Quote__c = qte.Id;
+        qteLine.SBQQ__ListPrice__c =100.0;
+        qteLine.SBQQ__Discount__c = 0.0;
+        qteLine.SBQQ__AdditionalDiscountAmount__c = 0.0;
+        qteLine.SBQQ__Incomplete__c = true;
+        qteLine.SBQQ__SubscriptionTerm__c = 12.0;
+        qteLine.SBQQ__StartDate__c = System.today();
+        qteLine.SBQQ__EndDate__c = System.today()+30;
+        qteLine.SBQQ__Product__c = prod.Id;
+        qteLine.SBQQ__Quantity__c = 1;
+        qteLine.Internal_SKU_Name__c = 'PAN-XDR-SET';
+        qteLine.isWrapperSKU__c = true;
+        insert qteLine;
+        System.debug('qteLine-------->'+qteLine);
+
+        
+        contrct = new Contract();
+        contrct.SBQQ__Opportunity__c = oppty.id;
+        contrct.AccountId = actsList[0].Id;
+        contrct.SBQQ__Quote__c = qte.id;
+        contrct.Billing_Account_Name__c = actsList[0].Id;
+        //contrct.SBQQ__PreserveBundleStructureUponRenewals__c = true;
+        //contrct.SBQQ__RenewalQuoted__c = true;
+        contrct.Status = 'Draft';
+        contrct.ContractTerm = 100;
+        contrct.StartDate = date.today().addDays(-10);
+        contrct.EndDate = date.newInstance(2099, 12, 31);
+        //contrct.RecordTypeId = Schema.SObjectType.Contract.getRecordTypeInfosByName().get('Market Place Contract').getRecordTypeId();
+        insert contrct;
+        System.debug('contrct-------->'+contrct);
+        
+        qte.Original_Contract__c = contrct.Id;
+        update qte;
+        
+        sub = new SBQQ__Subscription__c();
+        sub.SBQQ__Account__c = actsList[0].Id;
+        sub.SBQQ__Quantity__c = 1;
+        sub.SBQQ__Contract__c = contrct.id;
+        sub.SBQQ__SubscriptionStartDate__c = date.today();
+        sub.SBQQ__SubscriptionEndDate__c = date.newInstance(2099, 12, 31);
+        sub.SBQQ__Product__c = prod.Id;
+        sub.SBQQ__SubscriptionEndDate__c = System.today()+30;
+        sub.SBQQ__Quantity__c = 1;
+        sub.SBQQ__NetPrice__c = 100;
+        sub.SBQQ__ProrateMultiplier__c = 1;
+        insert sub;
+        
+         sub = [SELECT Id,SBQQ__Product__c,SBQQ__Product__r.SBQQ__SubscriptionPricing__c,SBQQ__Quantity__c,
+               SBQQ__NetPrice__c,SBQQ__ProrateMultiplier__c,Product_POT_Amounts__c,SBQQ__RequiredById__c,SBQQ__EndDate__c FROM SBQQ__Subscription__c WHERE Id =: sub.Id];
+
+        qteLine.SBQQ__Quantity__c = 200;
+        qteLine.SBQQ__UpgradedSubscription__c   = sub.Id;
+        update qteLine;
+        System.debug('sub-------->'+sub);
+        
+        Product_Relation__c pdrRl = new Product_Relation__c(Current_Product__c = prod.Id, Related_Product__c = prod.Id, Relation__c = 'Upgrade',  Scope__c = 'Renew');
+        insert pdrRl; 
+        prdRelIds = New List<Id>();
+        prdRelIds.add(pdrRl.Id);
+    }
+    
+    @IsTest
+    static void testMethod1(){
+        test.startTest();
+        PageReference pageRef = Page.SBQuoteLineUpgradeProductList;
+        pageRef.getParameters().put('productCode', prod.productCode);
+        pageRef.getParameters().put('quoteId', qte.Id);
+        pageRef.getParameters().put('quoteLineId', qteLine.Id);
+        Test.setCurrentPage(pageRef);
+        SBQuoteLineUpgradeController SBQuoteLineUpgradeControllerIns = New SBQuoteLineUpgradeController();
+        SBQuoteLineUpgradeControllerIns.selectedProductId = prod.Id;
+        try{
+      //  SBQuoteLineUpgradeControllerIns.onSelectProduct();    
+        }
+        catch(Exception ex){
+            
+        }
+        try{
+        SBQuoteLineUpgradeController.upsertUpgradeQuoteLines(qte.Id,contrct.Id, prdRelIds);    
+        }
+        catch(Exception ex){
+            
+        }
+        test.stopTest();
+    }
+     
+    @isTest
+    static void testmethod2(){
+        test.startTest();
+        PricebookEntry pdent = [Select id, pricebook2id,Product2.SBQQ__DefaultQuantity__c, product2id , unitPrice,isActive, Product2.QuantityUnitOfMeasure from pricebookentry where id = : pbentry.id];
+        SBQuoteLineUpgradeController.getNewQuoteLine(qte.Id, qteLine.Id,'', prod.Id, Date.today(), Date.today().addMonths(12).addDays(-1),1.0,  pdent);
+        test.stopTest();
+    }
+}
