@@ -1,0 +1,263 @@
+public without sharing class SBSizingRequestTriggerHandler implements ITrigger {
+    
+    private static final String SR_STATUS_COMPLETE = 'Completed';
+    
+    public SBSizingRequestTriggerHandler() {
+        
+    }
+    
+    public void bulkBeforeInsert(List<sObject> lstNew) {
+        
+    }
+ 
+    public void bulkAfterInsert(List<sObject> lstNew, Map<Id, sObject> mapNew) {
+        Set<Id> accIds  = new Set<Id>();
+        Set<Id> sizingReqIds = new Set<Id>();
+        List<SizingRequest__c> sizingRequests = (List<SizingRequest__c>)lstNew;
+        for (SizingRequest__c sizReq : sizingRequests) {
+            accIds.add(sizReq.Account__c);
+            sizingReqIds.add(sizReq.Id);
+        }
+        
+        if (!accIds.isEmpty() && !sizingReqIds.isEmpty()) {
+            updateQuotesOnNewRequest(accIds);
+            updateExistingRequests(accIds, sizingReqIds);
+            
+        }
+    }
+ 
+    public void bulkBeforeUpdate(List<sObject> lstOld, List<sObject> lstNew, Map<Id, sObject> mapOld, Map<Id, sObject> mapNew) {
+        
+    }
+ 
+    public void bulkAfterUpdate(List<sObject> lstOld, List<sObject> lstNew, Map<Id, sObject> mapOld, Map<Id, sObject> mapNew) {
+        Map<Id, Decimal> accIdToAUM  = new Map<Id, Decimal>();
+        Set<Id> completedRequestIds = new Set<Id>();
+        
+        List<SizingRequest__c> sizingRequests = (List<SizingRequest__c>)lstNew;
+        Map<Id, SizingRequest__c> oldMap = (Map<Id, SizingRequest__c>) mapOld;
+        Map<String,Account> accountToUpdateMap = new Map<String,Account>();
+        for (SizingRequest__c req : sizingRequests) {
+            SizingRequest__c reqOld = oldMap.get(req.Id);
+       
+            if ((req.Status__c != reqOld.Status__c || req.AUM__c != reqOld.AUM__c || req.isPrimary__c != reqOld.isPrimary__c) && req.Status__c == SR_STATUS_COMPLETE && req.isPrimary__c ) {
+                accIdToAUM.put(req.Account__c, req.AUM__c);
+            }
+            Account acc = new Account(Id=req.Account__c);
+            acc.AUM__c = req.AUM__c;
+            acc.Sizing_Request_Status__c = req.Status__c;
+            accountToUpdateMap.put(acc.Id, acc);
+            
+            if (req.Status__c != reqOld.Status__c && req.Status__c == SR_STATUS_COMPLETE) {
+                completedRequestIds.add(req.Id);
+            }
+        }
+        if(!accountToUpdateMap.isEmpty()) {
+            update accountToUpdateMap.values();
+        }
+        
+        if (!accIdToAUM.isEmpty()) {
+            updateRelatedQuotesAccId(accIdToAUM );
+        }
+        
+        if (!completedRequestIds.isEmpty()) {
+            sendEmailForCompletedReq(completedRequestIds);
+        }
+    }
+ 
+    public void bulkBeforeDelete(List<sObject> lstOld, Map<Id, sObject> mapOld) {
+        
+    }
+ 
+    public void bulkAfterDelete(List<sObject> lstOld, Map<Id, sObject> mapOld) {
+        
+    }
+    
+    public void bulkAfterUnDelete(List<sObject> lstNew) {
+        
+    }
+    
+    public static void updateQuotesOnNewRequest(Set<Id> accIds){
+        List<SBQQ__Quote__c> quotesToUpdate = new List<SBQQ__Quote__c>();
+        List<SBQQ__Quote__c> quotes = getQuotesByAccIds(accIds);
+        for (SBQQ__Quote__c quote : quotes) {
+            if (quote.Expanse_Platform_Tier__c != null) {
+                quote.Expanse_Platform_Tier__c = '';
+                quotesToUpdate.add(quote);
+            }
+        }
+        
+        if (!quotesToUpdate.isEmpty()) {
+            update quotesToUpdate;
+        }
+    }
+    
+    public static void updateExistingRequests(Set<Id> accIds, Set<Id> sizingReqIds ) {
+        List<SizingRequest__c> requestsToUpdate = new List<SizingRequest__c>();
+        System.debug(accIds + ' updateExistingRequests ' + sizingReqIds);
+        List<SizingRequest__c> existingReqs =  [SELECT Id, isPrimary__c, Account__c FROM SizingRequest__c WHERE Account__c in : accIds AND Id !=:sizingReqIds];
+        System.debug(' updateExistingRequests existingReqs ' + existingReqs);
+        for(SizingRequest__c existingReq : existingReqs) {
+            if(existingReq.isPrimary__c) {
+                existingReq.isPrimary__c = false;
+                requestsToUpdate.add(existingReq);
+            }
+        }
+        
+        if (!requestsToUpdate.isEmpty()) {
+            update requestsToUpdate;
+        }
+        //New Requests--Account Update and Quote Update
+        List<SizingRequest__c>  newReqs=[SELECT Id, isPrimary__c, Account__c,AUM__c,Status__c FROM SizingRequest__c WHERE Account__c in : accIds AND Id =:sizingReqIds];
+        System.debug(' updateExistingRequests newReqs ' + newReqs);
+        Map<Id, Decimal> accIdToAUM  = new Map<Id, Decimal>();
+        List<Account> accounts = new List<Account>();        
+        Set<Id> completedRequestIds = new Set<Id>();
+        // List<SizingRequest__c> Sr=new List<SizingRequest__c>();
+        if(!newReqs.isEmpty()) {
+            for(SizingRequest__c newReq:newReqs) {
+                if(newReq.isPrimary__c ==true && newReq.AUM__c != null && newReq.Status__c == SR_STATUS_COMPLETE) {
+                    
+                    Account acc = new Account(Id=newReq.Account__c);
+                    acc.AUM__c=newReq.AUM__c;
+                    acc.Sizing_Request_Status__c=newReq.Status__c;
+                    //newReq.Request_Type__c='System Generated';
+                    
+                    accounts.add(acc);
+                    //Sr.add(newReq);
+                    accIdToAUM.put(newReq.Account__c, newReq.AUM__c);
+                    completedRequestIds.add(newReq.Id);
+                }
+            }
+        }
+        if (!accounts.isEmpty()) {
+            update accounts;
+        }
+        
+        if (!accIdToAUM.isEmpty()) {
+            updateRelatedQuotesAccId(accIdToAUM);   
+        }
+        if (!completedRequestIds.isEmpty()) {
+            sendEmailForCompletedReq(completedRequestIds); 
+        }
+    }
+    
+    public static void updateRelatedQuotesAccId(Map<Id, Decimal> accIdToAUM) {
+        List<SB_Sizing_Tier__mdt> expanseTiers = MktpSettingsHelper.getExpanseTiers();
+        Map<Id, String> accToProductMap = getAccToProductMap(accIdToAUM, expanseTiers);
+        
+          if (!accToProductMap.isEmpty()) {
+            List<SBQQ__Quote__c> quotesToUpdate = new List<SBQQ__Quote__c>();
+            Map<Id, Decimal> accIdToAUMExisting = new Map<Id, Decimal>();
+            List<SBQQ__Quote__c> quotes = getQuotesByAccIds(accToProductMap.keySet());
+            Set<String> oldAccIds = new Set<String>();
+            for (SBQQ__Quote__c quote : quotes) {
+            	if(String.isNotBlank(quote.Original_Contract__r.AccountID)){
+                    oldAccIds.add(quote.Original_Contract__r.AccountID);
+                }
+            }
+            
+            List<SizingRequest__c> sizingRequests = [SELECT Id,Opportunity__c,Account__c, AUM__c FROM SizingRequest__c WHERE Account__c IN :oldAccIds AND isPrimary__c = true AND Status__c= :SR_STATUS_COMPLETE];
+            for (SizingRequest__c sReq : sizingRequests) {
+                accIdToAUMExisting.put(sReq.Account__c, sReq.AUM__c);
+            }
+            Map<Id, String> accToProductMapExisting = getAccToProductMap(accIdToAUMExisting, expanseTiers);
+            
+            for (SBQQ__Quote__c quote : quotes) {
+                String tier = accToProductMap.get(quote.SBQQ__Account__c);
+                decimal newTier = 0;
+                decimal existingTier = quote.Expanse_Platform_Tier__c != null ? decimal.valueOf(quote.Expanse_Platform_Tier__c.right(1)) : 0;
+                
+                if (String.isNotBlank(quote.Original_Contract__r.AccountId) && accToProductMapExisting.containsKey(quote.Original_Contract__r.AccountId) && 
+                   (quote.SBQQ__Type__c == 'Amendment' || !accIdToAUM.containsKey(quote.SBQQ__Account__c) || accIdToAUMExisting.get(quote.Original_Contract__r.AccountID) > accIdToAUM.get(quote.SBQQ__Account__c))) {
+                	if (quote.SBQQ__Type__c != 'Amendment') {    
+                        tier = accToProductMapExisting.get(quote.Original_Contract__r.AccountId);
+                    } else {
+                        tier = accToProductMap.get(quote.SBQQ__Account__c);
+                    }
+                }
+                if (quote.Expanse_Platform_Tier__c != tier) {
+                    if (quote.SBQQ__Type__c != 'Amendment') {
+                        quote.Expanse_Platform_Tier__c = tier;
+                        quotesToUpdate.add(quote);
+                    } else if (quote.SBQQ__Type__c == 'Amendment' && quote.Original_Contract__c != null) {
+                        newTier = !String.isBlank(tier) ? decimal.valueOf(tier.right(1)) : 0;
+                        if (newTier > existingTier) {
+                            quote.Expanse_Platform_Tier__c = tier;
+                            quotesToUpdate.add(quote);
+                        }
+                    }
+                }
+                
+            }
+            
+            if (!quotesToUpdate.isEmpty()) {
+                update quotesToUpdate;
+            }
+
+        }
+    }
+    
+    /*
+     * @param oppIdToAUM - Map of Opportunity Id to the AUM of it's primary sizing request
+     * @param expanseTiers - List of the expanse platform tier metadata
+     * returns - Map of Opportunity Id to the Platform Tier product corresponding to the AUM
+    */
+    public static Map<Id, String> getAccToProductMap(Map<Id, Decimal> accIdToAUM, List<SB_Sizing_Tier__mdt> expanseTiers){
+        Map<Id, String> accToProductMap  = new Map<Id, String>();
+        
+        for (Id accId : accIdToAUM.keySet()) {
+            Decimal aumVal = accIdToAUM.get(accId);
+            Decimal lowerBound = 0;
+            Decimal upperBound = 0;
+            String tierValue = '';
+            String tierKey = '';
+            
+            for (SB_Sizing_Tier__mdt tier : expanseTiers) {
+                lowerBound = tier.Lower_Bound__c;
+                upperBound = tier.Upper_Bound__c;
+                
+                if (lowerBound != 0 && upperBound != 0 && aumVal >= lowerBound && aumVal <= upperBound) {
+                    accToProductMap.put(accId, tier.Product_Code__c);
+                }
+            } 
+        }
+        
+        return accToProductMap;
+    }
+    
+    public static void sendEmailForCompletedReq(Set<Id> completedRequestIds){
+        List<Messaging.SingleEmailMessage> emailMessages = new List<Messaging.SingleEmailMessage>();
+        String baseUrl = URL.getSalesforceBaseUrl().toExternalForm();
+        List<SizingRequest__c> sizingReqs = [SELECT Id, Name, CreatedBy.Email, AdditionalInfo__c, AUM__c, Account__c,
+                                        Account__r.Name, Company_Domains__c, Company_Subsidiaries__c, isPrimary__c,
+                                        Opportunity__c, Opportunity__r.Name, Request_Type__c, Status__c
+                                        FROM SizingRequest__c 
+                                        WHERE Id in : completedRequestIds];
+        for (SizingRequest__c sizReq : sizingReqs) {
+            MktpEmailModel emailModel = new MktpEmailModel();
+            emailModel.toAddress = sizReq.CreatedBy.Email;
+            emailModel.subject = 'The details of the request ' + sizReq.Name + ' are below.';
+            String emailBody = 'Sizing Request ' + getSObjectUrl(baseUrl, sizReq.Id, sizReq.Name) + ' is completed.<br/><br/>';
+            emailBody += 'Additional Info: ' + sizReq.AdditionalInfo__c + '<br/>';
+            emailBody += 'Company Domains: ' + sizReq.Company_Domains__c +'<br/>';
+            emailBody += 'Company Subsidiaries: '+ sizReq.Company_Subsidiaries__c + '<br/>';
+            emailBody += 'Request Type: ' + sizReq.Request_Type__c +'<br/>' ;
+            emailBody += 'Status: ' + sizReq.Status__c + '<br/>';
+            emailBody += 'Is Primary?: ' + (sizReq.isPrimary__c ? 'Yes' : 'No') + '<br/>';
+            emailBody += 'Account: ' + getSObjectUrl(baseUrl, sizReq.Account__c, sizReq.Account__r.Name) + '<br/>';
+           // emailBody += 'Opportunity: '+ getSObjectUrl(baseUrl, sizReq.Opportunity__c, sizReq.Opportunity__r.Name) + '<br/>';
+			emailModel.emailBody = emailBody;
+            MktpEmailService.sendEmail(emailModel);
+        }
+    }
+    
+    public static String getSObjectUrl (String baseUrl, String objectId, String name) {
+        return '<a href="' + baseUrl + '/' + objectId + '">' + name + '</a>';
+    }
+    
+   public static List<SBQQ__Quote__c> getQuotesByAccIds (Set<Id> accIds) {
+        return [SELECT Id, Expanse_Platform_Tier__c, SBQQ__Opportunity2__c, SBQQ__Type__c,Original_Contract__c, Original_Contract__r.SBQQ__Opportunity__c,Original_Contract__r.AccountId,SBQQ__Account__c FROM SBQQ__Quote__c WHERE SBQQ__Account__c in : accIds AND SBQQ__Status__c='Pending'];
+   }
+    
+}
